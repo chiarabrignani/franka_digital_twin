@@ -28,9 +28,11 @@ setup(
         ],
     },
     entry_points={
-    'console_scripts': [
-        'state_manager = franka_dt.state_manager:main',
-        'command_manager = franka_dt.command_manager:main',
-              ],
+        'console_scripts': [
+            'state_manager = franka_dt.state_manager:main',
+            'command_manager = franka_dt.command_manager:main',
+            'synchronization_monitor = '
+            'franka_dt.synchronization_monitor:main',
+        ],
     },
 )

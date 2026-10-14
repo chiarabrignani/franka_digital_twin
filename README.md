@@ -24,8 +24,7 @@ fisico reale.
 - Ricevere e monitorare le informazioni articolari del FR3.
 - Consentire l'invio di comandi di posizione dal Digital Twin al robot
   simulato.
-- Monitorare la sincronizzazione tra il robot simulato e la sua
-  rappresentazione digitale.
+- Monitorare la regolarità della ricezione degli stati articolari.
 - Valutare l'entanglement mediante la metrica ODTE.
 - Eseguire test per verificare il corretto funzionamento del sistema.
 
@@ -70,21 +69,35 @@ Il componente:
 Il controller utilizzato è `fr3_position_controller`, configurato
 nell'ambiente ROS 2 e Gazebo.
 
-### 3. Componenti pianificati
+### 3. Synchronization Monitor
 
-I seguenti componenti saranno sviluppati nelle successive fasi
-del progetto.
+Il `Synchronization Monitor` controlla la regolarità della ricezione
+degli stati articolari del robot simulato attraverso il topic
+`/joint_states`.
 
-**Synchronization Monitor**
+Il componente:
+- verifica la presenza dei sette giunti richiesti nei messaggi ricevuti;
+- controlla che gli aggiornamenti dello stato articolare siano recenti;
+- segnala il passaggio dallo stato sincronizzato a quello non sincronizzato;
+- rileva il ripristino della ricezione regolare dei dati;
+- registra nei log le transizioni tra i due stati, evitando di ripetere
+  continuamente lo stesso avviso mentre una condizione persiste.
 
-Monitorerà la corrispondenza tra lo stato del robot simulato
-e quello registrato nella rappresentazione digitale.
+La soglia di obsolescenza dei dati è attualmente impostata a 2 secondi.
 
-**ODTE Monitor**
+Il monitor costituisce un primo meccanismo di controllo della
+sincronizzazione. Non rappresenta ancora un'implementazione completa
+della metrica ODTE.
 
-Implementerà il monitoraggio della metrica ODTE, seguendo la
-definizione scientifica di riferimento e utilizzando le informazioni
-necessarie per la valutazione dell'entanglement.
+### 4. ODTE Monitor
+
+Il componente dedicato alla metrica ODTE sarà sviluppato nelle
+successive fasi del progetto.
+
+La sua implementazione seguirà la definizione scientifica di
+riferimento e utilizzerà le informazioni necessarie per valutare
+quantitativamente l'entanglement tra il Digital Twin e il robot
+simulato.
 
 ## Comunicazione ROS 2
 
@@ -109,6 +122,9 @@ FR3 simulato in Gazebo
           |
           v
 Aggiornamento dello stato digitale
+          |
+          v
+ Synchronization Monitor
 ```
 
 Il percorso di invio dei comandi è:
@@ -140,7 +156,8 @@ Per eseguire il progetto sono necessari:
 - ROS 2 Jazzy;
 - Gazebo configurato per la simulazione del Franka FR3;
 - workspace del robot correttamente compilato;
-- controller `fr3_position_controller` disponibile e attivo;
+- controller `fr3_position_controller` disponibile e attivo per l'invio
+  dei comandi di posizione;
 - package ROS 2 `franka_dt` compilato.
 
 ## Installazione e compilazione
@@ -171,11 +188,12 @@ Per verificare gli eseguibili disponibili:
 ros2 pkg executables franka_dt
 ```
 
-Gli eseguibili previsti sono:
+Gli eseguibili disponibili sono:
 
 ```text
 franka_dt command_manager
 franka_dt state_manager
+franka_dt synchronization_monitor
 ```
 
 ## Avvio del sistema
@@ -223,10 +241,32 @@ sia in esecuzione e che il controller di posizione sia attivo.
 I valori inviati devono essere compatibili con i limiti articolari
 del robot e con la configurazione della simulazione.
 
+### 4. Avvio del Synchronization Monitor
+
+Aprire un terzo terminale ed eseguire:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/franka_ros2_ws/install/setup.bash
+source ~/franka_digital_twin/install/setup.bash
+
+ros2 run franka_dt synchronization_monitor
+```
+
+Il nodo rimane in ascolto sul topic `/joint_states` e controlla
+periodicamente la regolarità della ricezione degli stati articolari.
+
+Se non vengono ricevuti messaggi validi oppure se l'ultimo
+aggiornamento supera la soglia di 2 secondi, il monitor segnala
+una condizione di mancata sincronizzazione.
+
+Quando la ricezione regolare riprende, il nodo registra il
+ripristino dello stato sincronizzato.
+
 ## Test effettuati
 
-Sono stati eseguiti test iniziali per verificare i principali
-percorsi di comunicazione.
+Sono stati eseguiti test per verificare i principali percorsi
+di comunicazione e il comportamento dei componenti implementati.
 
 ### Acquisizione dello stato articolare
 
@@ -251,11 +291,38 @@ corrispondente alla posizione obiettivo richiesta.
 articolare e mostrasse il valore aggiornato del settimo giunto,
 pari a circa `0.9226 rad`.
 
-I test confermano il funzionamento iniziale dei componenti implementati
+### Verifica del Synchronization Monitor
+
+È stato verificato il comportamento del `Synchronization Monitor`
+durante il normale funzionamento e in seguito all'interruzione
+della pubblicazione degli stati articolari.
+
+Il test è stato eseguito disattivando temporaneamente il controller
+`joint_state_broadcaster` e riattivandolo successivamente.
+
+Durante il test è stato verificato che:
+- il monitor segnalasse lo stato sincronizzato in condizioni normali;
+- l'interruzione degli aggiornamenti determinasse una segnalazione
+  di mancata sincronizzazione;
+- l'avviso non venisse ripetuto continuamente mentre la condizione
+  di mancata sincronizzazione persisteva;
+- la riattivazione del controller determinasse il ripristino
+  dello stato sincronizzato.
+
+Il comportamento osservato è risultato coerente con la logica
+implementata nel monitor.
+
+Il test è stato eseguito nell'ambiente simulato ROS 2 e Gazebo.
+
+I test confermano il funzionamento dei componenti implementati
 e dei relativi percorsi di comunicazione in ambiente simulato.
 
-La valutazione quantitativa della sincronizzazione e l'implementazione
-della metrica ODTE sono ancora da completare.
+Il `Synchronization Monitor` consente di rilevare le interruzioni
+nella ricezione degli stati articolari e il successivo ripristino
+degli aggiornamenti.
+
+La valutazione quantitativa dell'entanglement mediante la metrica
+ODTE è ancora da implementare.
 
 ## Stato del progetto
 
@@ -269,15 +336,18 @@ dei componenti fondamentali del Digital Twin bidirezionale.
 - Configurazione del controller di posizione del FR3.
 - Implementazione dello `State Manager`.
 - Implementazione del `Command Manager`.
+- Implementazione del `Synchronization Monitor`.
 - Verifica della ricezione degli stati articolari.
 - Verifica dell'invio di comandi di posizione al robot simulato.
 - Verifica dell'aggiornamento dello stato digitale.
-- Esecuzione dei primi test in Gazebo.
+- Verifica della rilevazione della mancata sincronizzazione.
+- Verifica del ripristino della sincronizzazione dopo la ripresa
+  della pubblicazione degli stati articolari.
+- Esecuzione dei test iniziali in Gazebo.
 
 ### Attività da sviluppare
 
-- Progettazione e implementazione del `Synchronization Monitor`.
-- Definizione di una gestione coerente dei riferimenti temporali.
+- Approfondimento della gestione coerente dei riferimenti temporali.
 - Implementazione della metrica ODTE secondo la fonte scientifica
   di riferimento.
 - Definizione di test sistematici per la valutazione del sistema.
@@ -293,7 +363,8 @@ franka_digital_twin/
     ├── franka_dt/
     │   ├── __init__.py
     │   ├── state_manager.py
-    │   └── command_manager.py
+    │   ├── command_manager.py
+    │   └── synchronization_monitor.py
     ├── resource/
     ├── test/
     ├── package.xml
