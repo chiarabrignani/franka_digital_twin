@@ -229,11 +229,52 @@ In particolare, non sono ancora stati valutati sistematicamente:
 
 - il tempo trascorso tra l'invio del comando e il raggiungimento dell'obiettivo;
 - la risposta del sistema a sequenze di comandi;
-- il comportamento in presenza di comandi simultanei su più giunti;
+- il comportamento in presenza di sequenze di comandi;
 - la frequenza e la regolarità degli aggiornamenti durante il movimento;
 - la metrica ODTE.
 
 La valutazione quantitativa dell'entanglement mediante ODTE resta un'attività da sviluppare.
+
+#### Test 2: movimento simultaneo di più giunti
+
+Il secondo test ha verificato la possibilità di modificare simultaneamente
+la posizione di più giunti del braccio FR3 simulato.
+
+È stato inviato un singolo messaggio di tipo
+`std_msgs/msg/Float64MultiArray` sul topic
+`/digital_twin/command_positions`, contenente le posizioni obiettivo
+dei sette giunti.
+
+Il test ha richiesto le seguenti variazioni:
+
+| Giunto | Posizione iniziale (rad) | Posizione obiettivo (rad) | Variazione richiesta (rad) |
+|---|---:|---:|---:|
+| `fr3_joint2` | -0.7598819315 | -0.5598819315 | +0.20 |
+| `fr3_joint4` | -2.3306982713 | -2.1306982713 | +0.20 |
+| `fr3_joint7` | 0.9209257324 | 0.7209257324 | -0.20 |
+
+Le posizioni obiettivo degli altri quattro giunti sono state mantenute
+uguali alle rispettive posizioni iniziali.
+
+Dopo l'invio del comando, il movimento del braccio è stato osservato
+visivamente nell'ambiente Gazebo. Successivamente, è stato acquisito
+un campione dal topic `/joint_states` per verificare le posizioni finali.
+
+Le posizioni finali osservate dei giunti modificati sono risultate
+coerenti con i valori obiettivo, entro la precisione numerica riportata.
+Gli altri quattro giunti sono rimasti sostanzialmente invariati.
+
+Il test fornisce quindi una verifica funzionale del percorso di comando
+per variazioni simultanee di più giunti e dell'acquisizione dello stato
+risultante attraverso ROS 2.
+
+Anche questa verifica riguarda esclusivamente il robot simulato e non
+costituisce una validazione su hardware fisico.
+
+Durante l'acquisizione dello stato è stato visualizzato l'avviso
+`A message was lost!!!`. L'episodio non ha impedito di ottenere un
+campione completo con le posizioni finali attese; le cause dell'avviso
+restano da approfondire.
 
 ## 7. Sviluppi previsti
 
