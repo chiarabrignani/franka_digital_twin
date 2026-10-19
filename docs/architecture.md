@@ -172,16 +172,66 @@ Il FR3 simulato costituisce il sistema robotico con cui viene verificato il comp
 
 ## 6. Verifiche effettuate
 
-Le verifiche iniziali hanno riguardato:
+Le verifiche iniziali sono state eseguite nell'ambiente simulato ROS 2 Jazzy e Gazebo e hanno riguardato il percorso dello stato, il percorso dei comandi e il monitoraggio della ricezione dei dati.
 
-- acquisizione degli stati articolari;
+### 6.1 Verifiche preliminari
+
+Le verifiche preliminari hanno riguardato:
+
+- acquisizione degli stati articolari pubblicati su `/joint_states`;
 - aggiornamento della rappresentazione digitale;
-- invio dei comandi di posizione;
-- osservazione della variazione della posizione articolare;
+- invio dei comandi di posizione attraverso il Command Manager;
 - rilevamento dell'interruzione degli aggiornamenti;
 - rilevamento del ripristino della ricezione dei dati.
 
-Le verifiche sono state effettuate nell'ambiente simulato ROS 2 e Gazebo.
+I test sul monitoraggio hanno verificato il comportamento del Synchronization Monitor in presenza di dati non più aggiornati e il successivo ripristino della sincronizzazione.
+
+### 6.2 Test funzionale del percorso di comando
+
+È stato eseguito un test funzionale per verificare l'invio di un comando di posizione dal Digital Twin al FR3 simulato.
+
+Il test è stato effettuato con il controller `fr3_position_controller` attivo.
+
+Il comando è stato pubblicato sul topic `/digital_twin/command_positions` utilizzando un messaggio di tipo `std_msgs/msg/Float64MultiArray`, contenente le posizioni obiettivo dei sette giunti del braccio.
+
+Il Command Manager ha ricevuto il comando e lo ha inoltrato al controller attraverso il topic `/fr3_position_controller/commands`.
+
+La verifica dello stato finale è stata effettuata leggendo un messaggio dal topic `/joint_states`.
+
+#### Test 1: movimento del solo giunto 7
+
+Il primo test ha richiesto una variazione di posizione del giunto `fr3_joint7`, mantenendo invariate le posizioni obiettivo degli altri sei giunti.
+
+| Grandezza | Valore |
+|---|---:|
+| Posizione iniziale del giunto 7 | 0.8209257324 rad |
+| Posizione obiettivo | 0.9209257324 rad |
+| Posizione finale osservata | 0.9209257324 rad |
+| Variazione richiesta | +0.1 rad |
+| Variazione osservata | +0.1 rad |
+| Errore finale rispetto all'obiettivo | Circa 0 rad |
+
+La variazione richiesta corrisponde a circa 5.73 gradi.
+
+Il valore finale pubblicato su `/joint_states` coincide con la posizione obiettivo entro la precisione numerica riportata. Le posizioni degli altri sei giunti sono rimaste sostanzialmente invariate.
+
+Durante il test è stato inoltre osservato visivamente il movimento del braccio nell'ambiente Gazebo.
+
+Il test fornisce quindi una prima verifica funzionale del percorso di comando e della possibilità di osservare lo stato risultante attraverso i topic ROS 2.
+
+Questo risultato riguarda esclusivamente il comportamento del robot simulato e non costituisce una validazione su hardware fisico.
+
+#### Limiti della verifica
+
+Il test ha verificato il raggiungimento della posizione obiettivo, ma non ha misurato l'intera evoluzione temporale del movimento.
+
+In particolare, non sono ancora stati valutati sistematicamente:
+
+- il tempo trascorso tra l'invio del comando e il raggiungimento dell'obiettivo;
+- la risposta del sistema a sequenze di comandi;
+- il comportamento in presenza di comandi simultanei su più giunti;
+- la frequenza e la regolarità degli aggiornamenti durante il movimento;
+- la metrica ODTE.
 
 La valutazione quantitativa dell'entanglement mediante ODTE resta un'attività da sviluppare.
 
