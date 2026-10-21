@@ -33,6 +33,7 @@ setup(
             'command_manager = franka_dt.command_manager:main',
             'synchronization_monitor = '
             'franka_dt.synchronization_monitor:main',
+            'tracking_test = franka_dt.tracking_test:main',
         ],
     },
 )
