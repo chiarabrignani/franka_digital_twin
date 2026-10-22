@@ -529,6 +529,7 @@ Il documento descrive l'organizzazione dei componenti, i flussi di comunicazione
 ## Controllo di versione
 
 Il progetto utilizza **Git** per il controllo di versione e **GitHub** per ospitare il repository e condividere il codice sorgente.
+
 ---
 
 ## Nota conclusiva
