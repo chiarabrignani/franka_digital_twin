@@ -1,3 +1,5 @@
+import math
+
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
@@ -8,7 +10,6 @@ class StateManager(Node):
     def __init__(self):
         super().__init__('state_manager')
 
-        # Nomi dei sette giunti del braccio FR3
         self.joint_names = [
             'fr3_joint1',
             'fr3_joint2',
@@ -16,117 +17,146 @@ class StateManager(Node):
             'fr3_joint4',
             'fr3_joint5',
             'fr3_joint6',
-            'fr3_joint7'
+            'fr3_joint7',
         ]
 
-        # Stato digitale inizialmente non disponibile
         self.digital_state = None
-
-        # Informazioni temporali dell'ultimo aggiornamento
         self.source_timestamp = None
         self.receipt_timestamp = None
 
-        # Sottoscrizione al topic dello stato del robot
         self.subscription = self.create_subscription(
             JointState,
             '/joint_states',
             self.joint_state_callback,
-            10
+            10,
         )
 
-        # Stampa lo stato digitale una volta al secondo
+        # Pubblica lo stato acquisito dal robot simulato.
+        self.state_publisher = self.create_publisher(
+            JointState,
+            '/digital_twin/joint_states',
+            10,
+        )
+
         self.timer = self.create_timer(
             1.0,
-            self.print_digital_state
+            self.print_digital_state,
         )
 
         self.get_logger().info(
             'State Manager avviato. In attesa di /joint_states...'
         )
 
-    def joint_state_callback(self, msg):
+        self.get_logger().info(
+            'Pubblicazione dello stato digitale su '
+            '/digital_twin/joint_states.'
+        )
 
-        # Associa ogni nome di giunto alla posizione ricevuta
+    def joint_state_callback(self, msg):
+        # Verifica che nomi e posizioni siano coerenti.
+        if len(msg.name) != len(msg.position):
+            self.get_logger().warning(
+                'Messaggio ignorato: nomi e posizioni hanno '
+                'lunghezze differenti.'
+            )
+            return
+
         positions = dict(zip(msg.name, msg.position))
 
-        # Verifica che siano disponibili tutti i sette giunti
-        if not all(
-            joint in positions for joint in self.joint_names
-        ):
+        if not all(joint in positions for joint in self.joint_names):
             self.get_logger().warning(
                 'Messaggio ricevuto senza tutti i sette giunti.'
             )
             return
 
-        # Associa ogni giunto alla sua velocità, se disponibile
-        velocities = dict(zip(msg.name, msg.velocity))
+        # Rifiuta posizioni non valide.
+        if not all(
+            math.isfinite(positions[joint])
+            for joint in self.joint_names
+        ):
+            self.get_logger().warning(
+                'Messaggio ignorato: contiene posizioni non finite.'
+            )
+            return
 
-        # Aggiorna la rappresentazione digitale
+        velocities = dict(zip(msg.name, msg.velocity))
+        efforts = dict(zip(msg.name, msg.effort))
+
+        # Aggiorna la rappresentazione digitale interna.
         self.digital_state = {}
 
         for joint in self.joint_names:
             self.digital_state[joint] = {
                 'position': positions[joint],
-                'velocity': velocities.get(joint)
+                'velocity': velocities.get(joint),
             }
 
-        # Conserva separatamente i riferimenti temporali
         self.source_timestamp = (
             msg.header.stamp.sec,
-            msg.header.stamp.nanosec
+            msg.header.stamp.nanosec,
         )
-
         self.receipt_timestamp = self.get_clock().now()
 
-    def print_digital_state(self):
+        # Pubblica esclusivamente i sette giunti del braccio,
+        # ordinati in modo deterministico.
+        digital_msg = JointState()
+        digital_msg.header = msg.header
+        digital_msg.name = list(self.joint_names)
+        digital_msg.position = [
+            float(positions[joint]) for joint in self.joint_names
+        ]
 
-        # Non stampa nulla finché non riceve uno stato valido
+        if all(joint in velocities for joint in self.joint_names):
+            digital_msg.velocity = [
+                float(velocities[joint]) for joint in self.joint_names
+            ]
+
+        if all(joint in efforts for joint in self.joint_names):
+            digital_msg.effort = [
+                float(efforts[joint]) for joint in self.joint_names
+            ]
+
+        self.state_publisher.publish(digital_msg)
+
+    def print_digital_state(self):
         if self.digital_state is None:
             return
 
         self.get_logger().info('--- Stato digitale FR3 ---')
 
         for joint, values in self.digital_state.items():
-
             position = values['position']
             velocity = values['velocity']
 
-            if velocity is None:
-                velocity_text = 'non disponibile'
-            else:
-                velocity_text = f'{velocity:.4f} rad/s'
+            velocity_text = (
+                'non disponibile'
+                if velocity is None
+                else f'{velocity:.4f} rad/s'
+            )
 
             self.get_logger().info(
-                f'{joint}: '
-                f'posizione={position:.4f} rad, '
+                f'{joint}: posizione={position:.4f} rad, '
                 f'velocita={velocity_text}'
             )
 
         self.get_logger().info(
             f'Timestamp sorgente: {self.source_timestamp}'
         )
-
         self.get_logger().info(
-            f'Ultima ricezione: {self.receipt_timestamp.nanoseconds}'
-            ' ns'
+            f'Ultima ricezione: {self.receipt_timestamp.nanoseconds} ns'
         )
 
 
 def main(args=None):
-
     rclpy.init(args=args)
-
     node = StateManager()
 
     try:
         rclpy.spin(node)
-
     except KeyboardInterrupt:
         pass
-
     finally:
         node.destroy_node()
-
         if rclpy.ok():
             rclpy.shutdown()
 

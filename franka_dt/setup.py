@@ -34,6 +34,7 @@ setup(
             'synchronization_monitor = '
             'franka_dt.synchronization_monitor:main',
             'tracking_test = franka_dt.tracking_test:main',
+            'full_sequence_test = franka_dt.full_sequence_test:main',
             'odte_monitor = franka_dt.odte_monitor:main',
         ],
     },
