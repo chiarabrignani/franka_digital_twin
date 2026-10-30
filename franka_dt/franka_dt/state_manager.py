@@ -1,8 +1,13 @@
+import json
 import math
+import time
 
 import rclpy
 from rclpy.node import Node
+
 from sensor_msgs.msg import JointState
+
+from std_msgs.msg import String
 
 
 class StateManager(Node):
@@ -38,6 +43,12 @@ class StateManager(Node):
             10,
         )
 
+        self.timing_publisher = self.create_publisher(
+            String,
+            '/digital_twin/state_timing',
+            10,
+        )
+
         self.timer = self.create_timer(
             1.0,
             self.print_digital_state,
@@ -53,11 +64,15 @@ class StateManager(Node):
         )
 
     def joint_state_callback(self, msg):
+        # Misura l'inizio dell'elaborazione.
+        callback_start = time.monotonic()
+        reception_ros = self.get_clock().now().nanoseconds / 1e9
+
         # Verifica che nomi e posizioni siano coerenti.
         if len(msg.name) != len(msg.position):
             self.get_logger().warning(
-                'Messaggio ignorato: nomi e posizioni hanno '
-                'lunghezze differenti.'
+                 'Messaggio ignorato: nomi e posizioni hanno '
+                 'lunghezze differenti.'
             )
             return
 
@@ -97,8 +112,7 @@ class StateManager(Node):
         )
         self.receipt_timestamp = self.get_clock().now()
 
-        # Pubblica esclusivamente i sette giunti del braccio,
-        # ordinati in modo deterministico.
+        # Prepara lo stato digitale dei sette giunti.
         digital_msg = JointState()
         digital_msg.header = msg.header
         digital_msg.name = list(self.joint_names)
@@ -116,7 +130,28 @@ class StateManager(Node):
                 float(efforts[joint]) for joint in self.joint_names
             ]
 
+        # Pubblica lo stato digitale.
         self.state_publisher.publish(digital_msg)
+
+        # Misura il tempo di elaborazione del callback.
+        processing_time = time.monotonic() - callback_start
+
+        # Converte il timestamp originale del robot in secondi.
+        generation_ros = (
+            msg.header.stamp.sec
+            + msg.header.stamp.nanosec / 1e9
+        )
+
+        # Pubblica i dati temporali per il monitor ODTE.
+        timing_data = {
+            'generation_timestamp': generation_ros,
+            'reception_timestamp': reception_ros,
+            'processing_time_seconds': processing_time,
+        }
+
+        timing_msg = String()
+        timing_msg.data = json.dumps(timing_data)
+        self.timing_publisher.publish(timing_msg)
 
     def print_digital_state(self):
         if self.digital_state is None:

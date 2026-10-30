@@ -6,7 +6,12 @@ Il progetto mira alla realizzazione di un **Digital Twin del robot Franka FR3**,
 
 L'architettura è organizzata in nodi ROS 2 modulari, ciascuno con responsabilità specifiche per la gestione dei comandi, l'acquisizione dello stato articolare, il monitoraggio della sincronizzazione e la verifica del comportamento del sistema.
 
-Il progetto comprende inoltre un primo prototipo sperimentale per il calcolo della metrica **ODTE (Overall Digital Twin Entanglement)**, attualmente in fase di sviluppo e validazione.
+Il progetto comprende inoltre un prototipo sperimentale per il calcolo della metrica **ODTE (Overall Digital Twin Entanglement)**, basato sul monitoraggio delle due direzioni di comunicazione tra il robot fisico (nel progetto, simulato) e il Digital Twin:
+
+- **Physical → Digital (P→D):** monitoraggio del trasferimento dello stato articolare dal robot al Digital Twin.
+- **Digital → Physical (D→P):** monitoraggio del trasferimento dei comandi dal Digital Twin al robot.
+
+L'implementazione ODTE è attualmente sperimentale e viene sottoposta a verifiche funzionali e sperimentali.
 
 ---
 
@@ -18,11 +23,14 @@ Gli obiettivi principali del progetto sono:
 - Acquisire e monitorare lo stato delle sette articolazioni del robot.
 - Implementare un nodo per la gestione e l'inoltro dei comandi di posizione.
 - Pubblicare lo stato articolare acquisito su un topic dedicato al Digital Twin.
+- Verificare la validità e la coerenza degli aggiornamenti dello stato articolare.
 - Monitorare la freschezza degli aggiornamenti dello stato del robot.
 - Verificare il raggiungimento delle posizioni articolari desiderate.
 - Verificare l'allineamento tra lo stato del robot simulato e quello pubblicato dal Digital Twin.
-- Registrare i risultati dei test in file CSV.
-- Sviluppare un prototipo sperimentale per il calcolo della metrica ODTE.
+- Monitorare la disponibilità degli aggiornamenti provenienti dal robot.
+- Sviluppare un prototipo sperimentale per il calcolo della metrica ODTE in entrambe le direzioni.
+- Implementare test automatici per verificare il comportamento dei principali componenti.
+- Registrare i risultati dei test sperimentali in file CSV.
 - Mantenere il progetto modulare e organizzato tramite Git.
 
 ---
@@ -35,6 +43,7 @@ Gli obiettivi principali del progetto sono:
 | ROS 2 Jazzy | Middleware per la comunicazione tra i nodi |
 | Gazebo | Simulazione del robot Franka FR3 |
 | Python | Implementazione dei nodi ROS 2 e dei test |
+| pytest | Esecuzione dei test automatici |
 | Git | Controllo di versione |
 | GitHub | Repository del progetto |
 
@@ -51,15 +60,29 @@ Il nodo `state_manager.py` acquisisce lo stato articolare del robot attraverso `
 Le principali responsabilità sono:
 
 - Ricevere gli aggiornamenti dello stato articolare.
+- Verificare la coerenza tra il numero dei nomi dei giunti e il numero delle posizioni ricevute.
 - Verificare la presenza delle sette articolazioni del braccio FR3.
-- Controllare la coerenza tra nomi dei giunti e posizioni ricevute.
-- Rifiutare gli aggiornamenti contenenti posizioni non finite.
+- Controllare che le posizioni articolari siano valori finiti.
 - Mantenere una rappresentazione digitale interna dello stato articolare.
 - Pubblicare i sette giunti in un ordine deterministico.
-- Rendere disponibili, quando presenti, anche le informazioni di velocità e sforzo articolare.
-- Visualizzare periodicamente lo stato acquisito.
+- Rendere disponibili, quando presenti per tutti i giunti, anche le informazioni di velocità e sforzo articolare.
+- Registrare le informazioni temporali relative alla generazione, alla ricezione e all'elaborazione degli aggiornamenti.
 
 Il topic `/digital_twin/joint_states` utilizza il tipo di messaggio `sensor_msgs/msg/JointState`.
+
+Il nodo pubblica inoltre le informazioni temporali attraverso:
+
+- `/digital_twin/state_timing`
+
+Il messaggio temporale viene pubblicato utilizzando `std_msgs/msg/String` e contiene un oggetto JSON con i seguenti campi:
+
+| Campo | Descrizione |
+|---|---|
+| `generation_timestamp` | Timestamp associato alla generazione dello stato |
+| `reception_timestamp` | Timestamp di ricezione dello stato |
+| `processing_time_seconds` | Tempo impiegato per l'elaborazione del messaggio |
+
+Queste informazioni vengono utilizzate dal monitor ODTE per la valutazione del percorso Physical → Digital.
 
 ### 2. Command Manager
 
@@ -71,16 +94,38 @@ Le principali responsabilità sono:
 
 - Ricevere un array contenente le posizioni articolari desiderate.
 - Verificare che il comando contenga esattamente sette valori.
-- Verificare che i valori siano numerici e finiti.
+- Verificare che tutti i valori siano finiti.
+- Impedire l'esecuzione contemporanea di più comandi.
+- Assegnare un identificativo ai comandi accettati.
 - Inoltrare i comandi validi al controller del robot.
+- Verificare il raggiungimento delle posizioni desiderate.
+- Controllare che le posizioni raggiunte rimangano entro la tolleranza prevista per il tempo richiesto.
+- Gestire il completamento dei comandi e il relativo timeout.
 
-Il componente permette di inviare comandi attraverso un'interfaccia dedicata al Digital Twin, separando la generazione del comando dalla comunicazione con il controller.
+Il nodo pubblica inoltre lo stato dei comandi attraverso:
+
+- `/digital_twin/command_status`
+
+Il messaggio utilizza `std_msgs/msg/String` e contiene informazioni in formato JSON, tra cui lo stato del comando, il relativo identificativo e l'eventuale motivo di rifiuto.
+
+Il completamento di un comando viene verificato considerando:
+
+| Parametro | Valore predefinito |
+|---|---:|
+| Numero di articolazioni | 7 |
+| Tolleranza sulla posizione | 0.01 rad |
+| Durata minima di stabilità | 0.5 s |
+| Timeout del comando | 10 s |
+
+Il nodo pubblica anche un heartbeat periodico attraverso `/digital_twin/physical_heartbeat`, utilizzato per monitorare la disponibilità degli aggiornamenti provenienti dal robot.
+
+L'heartbeat viene pubblicato con una frequenza di 2 Hz e indica se lo stato articolare del robot è stato ricevuto recentemente.
 
 ### 3. Synchronization Monitor
 
 Il nodo `synchronization_monitor.py` controlla la freschezza degli aggiornamenti ricevuti attraverso `/joint_states`.
 
-Il monitor utilizza una soglia di **2 secondi** per individuare eventuali interruzioni o ritardi significativi nella ricezione dei dati.
+Il monitor utilizza una soglia temporale per individuare eventuali interruzioni o ritardi significativi nella ricezione dei dati.
 
 Le principali responsabilità sono:
 
@@ -158,24 +203,94 @@ In questo modo è possibile verificare sia il raggiungimento del comando sia l'a
 
 I risultati vengono salvati in un file CSV nella cartella `results/`.
 
-### 6. ODTE Monitor
+### 6. ODTE Metrics
 
-Il modulo `odte_monitor.py` implementa un primo prototipo sperimentale per il monitoraggio della metrica ODTE.
+Il modulo `odte_metrics.py` contiene le funzioni matematiche utilizzate per il calcolo delle componenti della metrica ODTE.
 
-Il nodo:
+Le funzioni principali sono:
 
-- Si sottoscrive al topic `/joint_states`.
-- Verifica la presenza delle sette articolazioni richieste.
-- Controlla che le posizioni ricevute siano finite.
-- Elabora le informazioni temporali disponibili.
-- Calcola una stima preliminare delle componenti della metrica.
-- Pubblica i risultati in formato JSON attraverso `/digital_twin/odte`.
+- `calculate_timeliness()`: valuta la tempestività di un aggiornamento rispetto a una soglia temporale desiderata.
+- `calculate_reliability()`: calcola l'affidabilità sulla base del rapporto tra frequenza misurata e frequenza attesa.
+- `calculate_odte()`: combina le componenti della metrica attraverso il prodotto dei rispettivi valori.
 
-Il messaggio pubblicato utilizza il tipo ROS 2 `std_msgs/msg/String`.
+La metrica complessiva viene calcolata secondo la relazione:
+
+```text
+ODTE = T × R × A
+```
+
+dove:
+
+| Componente | Significato |
+|---|---|
+| `T` | Timeliness |
+| `R` | Reliability |
+| `A` | Availability |
+
+Le funzioni verificano la validità dei valori numerici ricevuti e sollevano un'eccezione `ValueError` in presenza di parametri non validi.
+
+### 7. ODTE Monitor
+
+Il modulo `odte_monitor.py` implementa un prototipo sperimentale per il monitoraggio della metrica ODTE.
+
+Il nodo si sottoscrive ai seguenti topic:
+
+- `/digital_twin/state_timing`
+- `/digital_twin/physical_heartbeat`
+- `/digital_twin/command_status`
+
+Il monitor elabora le informazioni ricevute e pubblica i risultati attraverso:
+
+- `/digital_twin/odte`
+
+Il messaggio pubblicato utilizza il tipo ROS 2 `std_msgs/msg/String` e contiene informazioni in formato JSON.
+
+Il monitor distingue due direzioni di comunicazione.
+
+#### Physical → Digital (P→D)
+
+Questa direzione rappresenta il trasferimento dello stato articolare dal robot al Digital Twin.
+
+Le componenti vengono determinate nel modo seguente:
+
+- **Timeliness (`T`):** valuta la tempestività degli aggiornamenti sulla base delle informazioni temporali ricevute dallo State Manager.
+- **Reliability (`R`):** confronta la frequenza di aggiornamento misurata con quella attesa.
+- **Availability (`A`):** viene impostata a 1 in questa direzione, in quanto la disponibilità non viene misurata indipendentemente attraverso il monitoraggio dei comandi.
+
+#### Digital → Physical (D→P)
+
+Questa direzione rappresenta il trasferimento dei comandi dal Digital Twin al robot.
+
+Le componenti vengono determinate nel modo seguente:
+
+- **Timeliness (`T`):** rapporto tra i comandi accettati e completati entro la soglia temporale prevista.
+- **Reliability (`R`):** rapporto tra i comandi completati con successo e i comandi accettati.
+- **Availability (`A`):** viene stimata attraverso gli heartbeat positivi ricevuti dal robot all'interno di una finestra temporale.
+
+I comandi rifiutati non vengono conteggiati tra quelli accettati.
+
+Quando non sono presenti comandi accettati, le componenti Timeliness e Reliability vengono impostate a zero. Il monitor continua comunque a pubblicare i risultati.
+
+#### Parametri configurabili
+
+Il monitor dispone di parametri per configurare le soglie temporali, le frequenze attese e la finestra di osservazione.
+
+| Parametro | Valore predefinito | Descrizione |
+|---|---:|---|
+| `expected_rate_hz` | 100.0 | Frequenza di aggiornamento attesa per il percorso Physical → Digital |
+| `desired_timeliness_ms` | 50.0 | Soglia temporale desiderata per il percorso Physical → Digital |
+| `window_seconds` | 10.0 | Finestra temporale di osservazione |
+| `heartbeat_timeout` | 1.5 | Parametro configurato per il monitoraggio dell'heartbeat, non ancora utilizzato direttamente nel calcolo attuale di Availability |
+| `expected_heartbeat_rate_hz` | 2.0 | Frequenza attesa degli heartbeat |
+| `command_timeliness_ms` | 10000.0 | Soglia temporale per il completamento dei comandi |
+
+I valori predefiniti possono essere modificati attraverso i parametri ROS 2.
 
 **Nota importante:** questa implementazione è sperimentale e non costituisce ancora una riproduzione scientificamente validata della metrica ODTE descritta in letteratura.
 
-Le componenti temporali, il calcolo della frequenza di aggiornamento e la gestione della disponibilità richiedono ulteriori verifiche. I valori prodotti devono quindi essere interpretati come risultati preliminari, non come una misura definitiva della qualità del Digital Twin.
+I risultati devono essere interpretati come indicatori preliminari del comportamento del sistema. In particolare, le componenti dipendono dalle modalità di acquisizione dei timestamp, dalla frequenza degli aggiornamenti, dalla gestione degli heartbeat e dagli eventi relativi ai comandi.
+
+Un valore `ODTE = 1.0` non dimostra, da solo, una sincronizzazione perfetta tra il robot e il Digital Twin.
 
 ---
 
@@ -192,22 +307,26 @@ flowchart TD
     C["State Manager"]
     D["/digital_twin/joint_states"]
     E["Digital Twin: stato articolare"]
-    F["Synchronization Monitor"]
+    F["/digital_twin/state_timing"]
     G["ODTE Monitor"]
+    H["Synchronization Monitor"]
 
     A --> B
     B --> C
     C --> D
+    C --> F
     D --> E
-    B --> F
-    B --> G
+    F --> G
+    B --> H
 ```
 
 Il robot simulato pubblica lo stato articolare su `/joint_states`.
 
 Lo State Manager verifica i dati ricevuti e pubblica lo stato filtrato su `/digital_twin/joint_states`.
 
-Il Synchronization Monitor e l'ODTE Monitor ricevono gli aggiornamenti da `/joint_states` per svolgere le rispettive attività di monitoraggio.
+Inoltre, pubblica le informazioni temporali su `/digital_twin/state_timing`, utilizzate dall'ODTE Monitor per valutare il percorso Physical → Digital.
+
+Il Synchronization Monitor riceve gli aggiornamenti da `/joint_states` per svolgere le proprie attività di monitoraggio.
 
 ### Invio dei comandi
 
@@ -221,15 +340,47 @@ flowchart TD
     D["/fr3_position_controller/commands"]
     E["FR3 Position Controller"]
     F["Robot FR3 simulato"]
+    G["/digital_twin/command_status"]
+    H["ODTE Monitor"]
 
     A --> B
     B --> C
     C --> D
     D --> E
     E --> F
+    C --> G
+    G --> H
 ```
 
 Il Command Manager riceve il comando, ne verifica la validità e inoltra le posizioni al controller del robot simulato.
+
+Durante l'esecuzione, il nodo pubblica gli aggiornamenti relativi allo stato del comando. Queste informazioni vengono utilizzate dall'ODTE Monitor per valutare il percorso Digital → Physical.
+
+### Monitoraggio della disponibilità
+
+Il Command Manager pubblica periodicamente un heartbeat che indica se gli aggiornamenti dello stato articolare del robot sono stati ricevuti recentemente.
+
+Il flusso è il seguente:
+
+```mermaid
+flowchart TD
+    A["Robot FR3 simulato"]
+    B["/joint_states"]
+    C["Command Manager"]
+    D["Heartbeat periodico"]
+    E["/digital_twin/physical_heartbeat"]
+    F["ODTE Monitor"]
+    G["Valutazione Availability"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+```
+
+Gli heartbeat positivi vengono utilizzati per stimare la disponibilità del percorso Digital → Physical all'interno della finestra temporale configurata.
 
 ### Verifica della sequenza di movimento
 
@@ -272,8 +423,11 @@ I principali topic utilizzati dal progetto sono riportati nella tabella seguente
 |---|---|---|
 | `/joint_states` | `sensor_msgs/msg/JointState` | Pubblicazione dello stato articolare del robot |
 | `/digital_twin/joint_states` | `sensor_msgs/msg/JointState` | Pubblicazione dello stato articolare filtrato del Digital Twin |
+| `/digital_twin/state_timing` | `std_msgs/msg/String` | Pubblicazione delle informazioni temporali dello stato in formato JSON |
 | `/digital_twin/command_positions` | `std_msgs/msg/Float64MultiArray` | Ricezione dei comandi di posizione desiderati |
 | `/fr3_position_controller/commands` | `std_msgs/msg/Float64MultiArray` | Invio dei comandi al controller di posizione |
+| `/digital_twin/command_status` | `std_msgs/msg/String` | Pubblicazione dello stato dei comandi in formato JSON |
+| `/digital_twin/physical_heartbeat` | `std_msgs/msg/Bool` | Pubblicazione dell'heartbeat relativo alla disponibilità degli aggiornamenti fisici |
 | `/digital_twin/odte` | `std_msgs/msg/String` | Pubblicazione delle metriche ODTE in formato JSON |
 
 ---
@@ -288,6 +442,7 @@ Per eseguire il progetto è necessario disporre di:
 - Gazebo e i pacchetti di simulazione del robot.
 - Python e gli strumenti di compilazione ROS 2.
 - Il package `franka_dt` presente nel repository.
+- `pytest` per eseguire i test automatici.
 
 Il progetto utilizza due workspace:
 
@@ -387,7 +542,7 @@ ros2 run franka_dt state_manager
 
 ### Command Manager
 
-Avvia il nodo responsabile della gestione dei comandi di posizione:
+Avvia il nodo responsabile della gestione dei comandi di posizione e della pubblicazione dell'heartbeat:
 
 ```bash
 ros2 run franka_dt command_manager
@@ -433,16 +588,7 @@ ros2 run franka_dt odte_monitor --ros-args \
   -p window_seconds:=10.0
 ```
 
-I parametri configurabili sono:
-
-| Parametro | Valore utilizzato | Descrizione |
-|---|---:|---|
-| `use_sim_time` | `true` | Utilizza il tempo di simulazione ROS |
-| `expected_rate_hz` | `100.0` | Frequenza di aggiornamento attesa |
-| `desired_timeliness_ms` | `50.0` | Soglia temporale desiderata, espressa in millisecondi |
-| `window_seconds` | `10.0` | Finestra temporale utilizzata per il monitoraggio |
-
-La frequenza attesa e la soglia temporale sono parametri configurabili e non rappresentano necessariamente le prestazioni effettive del sistema.
+La frequenza attesa e la soglia temporale possono essere modificate in base allo scenario sperimentale.
 
 Per osservare i risultati pubblicati:
 
@@ -468,33 +614,15 @@ Il messaggio pubblicato dal Digital Twin contiene i sette giunti del braccio FR3
 
 È stata verificata la possibilità di inviare un comando di posizione attraverso `/digital_twin/command_positions` e inoltrarlo al controller del robot simulato.
 
-Durante una delle prove, la posizione di riferimento di `fr3_joint7` è stata modificata da:
+È stato inoltre verificato il completamento di un comando, controllando che le posizioni articolari raggiungessero i valori richiesti e rimanessero entro la tolleranza prevista.
 
-```text
-0.912627344 rad
-```
-
-a:
-
-```text
-0.922627344 rad
-```
-
-La variazione richiesta è pari a:
-
-```text
-+0.01 rad
-```
-
-Il test è stato utilizzato per verificare il percorso del comando dal nodo di gestione fino al controller.
+Il completamento viene comunicato attraverso `/digital_twin/command_status`.
 
 ### 3. Verifica del Synchronization Monitor
 
 Il monitor è stato verificato simulando un'interruzione degli aggiornamenti dello stato articolare.
 
 La procedura prevede l'arresto e il successivo riavvio del `joint_state_broadcaster`, in modo da osservare il comportamento del monitor quando gli aggiornamenti non arrivano più e quando riprendono.
-
-La soglia utilizzata per identificare uno stato non aggiornato è di 2 secondi.
 
 ### 4. Tracking Test
 
@@ -571,26 +699,33 @@ Il file dei risultati è stato salvato in:
 ```text
 results/full_sequence_test_20261023_101704.csv
 ```
+
 Il file CSV viene salvato localmente nella cartella `results/`, esclusa dal controllo di versione tramite `.gitignore`. Di conseguenza, il file non viene pubblicato automaticamente su GitHub.
 
 Questi risultati documentano il comportamento osservato durante la specifica esecuzione del test e non costituiscono una valutazione generale delle prestazioni temporali del sistema.
 
-### 6. ODTE Monitor: risultati preliminari
+### 6. Verifica dell'heartbeat e della disponibilità
+
+È stato verificato il comportamento dell'heartbeat pubblicato dal Command Manager attraverso `/digital_twin/physical_heartbeat`.
+
+L'heartbeat viene utilizzato per indicare se il sistema continua a ricevere aggiornamenti dello stato articolare del robot.
+
+Durante la prova, il `joint_state_broadcaster` è stato disattivato e successivamente riattivato.
+
+In seguito all'interruzione degli aggiornamenti, gli heartbeat positivi sono progressivamente usciti dalla finestra temporale di osservazione e la componente Availability del percorso Digital → Physical è diminuita fino a zero.
+
+Dopo la riattivazione del broadcaster e il ripristino degli aggiornamenti, la disponibilità è progressivamente aumentata fino a raggiungere nuovamente il valore massimo.
+
+Questa prova ha permesso di verificare il comportamento della componente Availability in presenza di un'interruzione e del successivo ripristino degli aggiornamenti.
+
+### 7. ODTE Monitor: risultati preliminari
 
 È stato avviato il nodo sperimentale `odte_monitor.py`, che pubblica i risultati sul topic `/digital_twin/odte`.
 
-Durante le prove sono stati osservati messaggi di questo tipo:
+Il monitor elabora separatamente le informazioni relative alle due direzioni di comunicazione:
 
-```text
-[INFO] ODTE Monitor avviato: percorso Physical -> Digital.
-[WARN] ODTE non ancora calcolabile: servono almeno due aggiornamenti validi.
-[INFO] T=1.000 | R=0.006 | A=1.000 | ODTE=0.006
-[INFO] T=1.000 | R=1.000 | A=1.000 | ODTE=1.000
-```
-
-Il primo avviso indica che, all'avvio, il monitor necessita di almeno due aggiornamenti validi prima di effettuare il calcolo.
-
-Successivamente, il nodo ha iniziato a pubblicare messaggi JSON sul topic `/digital_twin/odte`, contenenti le informazioni relative alla direzione del flusso, alla tempestività, all'affidabilità, alla disponibilità e al valore complessivo ODTE.
+- `physical_to_digital`
+- `digital_to_physical`
 
 Un esempio della struttura dei dati pubblicati è:
 
@@ -604,23 +739,77 @@ Un esempio della struttura dei dati pubblicati è:
 }
 ```
 
-Questo JSON illustra la struttura del messaggio osservato e non rappresenta un risultato di validazione scientifica della metrica.
+Per il percorso Digital → Physical, il monitor considera anche le informazioni relative ai comandi accettati, completati e agli heartbeat ricevuti.
+
+Durante una prova con un comando completato correttamente, sono stati osservati valori:
+
+```text
+T = 1.0
+R = 1.0
+A = 1.0
+ODTE = 1.0
+```
+
+È stata inoltre verificata la pubblicazione dei risultati anche in assenza di comandi accettati. In questo caso, Timeliness e Reliability vengono impostate a zero, mentre Availability continua a essere calcolata sulla base degli heartbeat.
 
 #### Precisazioni sull'implementazione ODTE
 
-Il monitor costituisce un **prototipo sperimentale**. I risultati ottenuti finora dimostrano che il nodo può avviarsi, ricevere aggiornamenti e pubblicare valori calcolati, ma non dimostrano che la metrica sia implementata in modo scientificamente equivalente alla formulazione originale.
+Il monitor costituisce un **prototipo sperimentale**.
+
+Le prove effettuate dimostrano che il nodo può:
+
+- Ricevere gli aggiornamenti temporali dello stato articolare.
+- Ricevere gli heartbeat pubblicati dal Command Manager.
+- Ricevere gli eventi relativi ai comandi.
+- Elaborare le informazioni per entrambe le direzioni.
+- Calcolare e pubblicare le componenti della metrica.
+- Continuare a pubblicare risultati anche quando non sono presenti comandi accettati.
+
+I risultati ottenuti non dimostrano tuttavia che la metrica sia implementata in modo scientificamente equivalente alla formulazione originale.
 
 In particolare:
 
-- **Timeliness (`T`)**: viene stimata attraverso le informazioni temporali disponibili. La correttezza della stima dipende dalla coerenza dei timestamp e dalla gestione del tempo di simulazione.
-- **Reliability (`R`)**: viene stimata in funzione della frequenza di aggiornamento osservata rispetto alla frequenza attesa. Il metodo di calcolo richiede ulteriori verifiche.
-- **Availability (`A`)**: nella versione attuale è impostata a 1 e non costituisce una misura indipendente della disponibilità del sistema.
-- **Tempo di esecuzione**: la misura attuale non rappresenta ancora una misura attendibile del tempo necessario per elaborare un aggiornamento completo del Digital Twin.
-- **Valore ODTE**: viene calcolato combinando le componenti implementate, ma deve essere interpretato alla luce delle limitazioni descritte.
+- **Timeliness (`T`):** nel percorso Physical → Digital viene valutata sulla base dei timestamp disponibili; nel percorso Digital → Physical viene determinata considerando il completamento dei comandi entro la soglia prevista.
+- **Reliability (`R`):** nel percorso Physical → Digital viene stimata confrontando la frequenza misurata con quella attesa; nel percorso Digital → Physical considera il rapporto tra comandi completati con successo e comandi accettati.
+- **Availability (`A`):** nel percorso Digital → Physical viene stimata attraverso gli heartbeat positivi osservati nella finestra temporale configurata. Nel percorso Physical → Digital è impostata a 1.
+- **Valore ODTE:** viene calcolato combinando le componenti implementate attraverso il prodotto `T × R × A`.
 
-Di conseguenza, un valore `ODTE = 1.0` non dimostra, da solo, una sincronizzazione perfetta tra il robot e il Digital Twin.
+Un valore `ODTE = 1.0` non dimostra, da solo, una sincronizzazione perfetta tra il robot e il Digital Twin.
 
-Per rendere il monitor più rigoroso sarà necessario verificare la formulazione matematica originale, definire chiaramente i timestamp di riferimento, misurare il tempo di elaborazione effettivo e validare separatamente ciascuna componente della metrica.
+Per una validazione più rigorosa sarà necessario verificare la formulazione matematica originale, definire chiaramente i timestamp di riferimento e valutare separatamente ciascuna componente della metrica.
+
+### 8. Test automatici
+
+Il package include una suite di test automatici realizzata con `pytest`.
+
+I test verificano il comportamento dei principali componenti del sistema, tra cui:
+
+- Command Manager.
+- Funzioni matematiche del modulo ODTE.
+- ODTE Monitor.
+- Controlli di qualità del codice.
+
+Per eseguire i test, spostarsi nella cartella del package:
+
+```bash
+cd ~/franka_digital_twin/franka_dt
+```
+
+Eseguire:
+
+```bash
+python3 -m pytest test -v
+```
+
+Durante l'ultima esecuzione verificata, la suite ha prodotto il seguente risultato:
+
+```text
+44 passed, 1 skipped, 8 warnings
+```
+
+Il test saltato riguarda il controllo del copyright header. Gli avvisi riportati sono relativi all'utilizzo di `fork()` in un processo multi-thread.
+
+Il risultato documenta il superamento dei test eseguiti in quella specifica versione del progetto.
 
 ---
 
@@ -642,16 +831,21 @@ franka_digital_twin/
     │   ├── state_manager.py
     │   ├── synchronization_monitor.py
     │   ├── odte_monitor.py
+    │   ├── odte_metrics.py
     │   ├── tracking_test.py
     │   └── full_sequence_test.py
     ├── resource/
     ├── test/
+    │   ├── test_command_manager.py
+    │   ├── test_odte_metrics.py
+    │   ├── test_odte_monitor.py
+    │   └── test_copyright.py
     ├── package.xml
     ├── setup.py
     └── setup.cfg
 ```
 
-La cartella `results/` contiene i risultati dei test, mentre `docs/` contiene la documentazione tecnica dell'architettura.
+La cartella `results/` contiene i risultati dei test sperimentali, mentre `docs/` contiene la documentazione tecnica dell'architettura.
 
 La struttura riportata descrive l'organizzazione principale del progetto; i file effettivamente presenti possono variare in base allo stato corrente del repository.
 
@@ -665,23 +859,30 @@ La struttura riportata descrive l'organizzazione principale del progetto; i file
 - Acquisizione dello stato articolare tramite `/joint_states`.
 - Validazione di base dei messaggi di stato.
 - Pubblicazione dello stato articolare filtrato tramite `/digital_twin/joint_states`.
+- Pubblicazione delle informazioni temporali attraverso `/digital_twin/state_timing`.
 - Gestione e inoltro dei comandi di posizione.
+- Validazione dei comandi ricevuti.
+- Monitoraggio del completamento dei comandi.
+- Pubblicazione dello stato dei comandi tramite `/digital_twin/command_status`.
+- Pubblicazione dell'heartbeat fisico tramite `/digital_twin/physical_heartbeat`.
 - Monitoraggio della freschezza degli aggiornamenti dello stato.
 - Test del raggiungimento simultaneo di posizioni articolari.
 - Test completo di una sequenza di tre movimenti sulle sette articolazioni.
 - Verifica dell'allineamento tra lo stato del robot e quello pubblicato dal Digital Twin.
 - Salvataggio dei risultati dei test in formato CSV.
-- Primo prototipo sperimentale di monitoraggio ODTE con pubblicazione di messaggi JSON.
+- Implementazione delle funzioni matematiche di supporto per il calcolo ODTE.
+- Primo prototipo sperimentale di monitoraggio ODTE per entrambe le direzioni.
+- Test automatici dei principali componenti del package.
 
 ### Sviluppi futuri
 
 - Consolidare la documentazione dell'architettura.
 - Ampliare i test automatici dei nodi ROS 2.
-- Migliorare la gestione e la validazione dei comandi.
+- Migliorare ulteriormente la gestione e la validazione dei comandi.
 - Valutare quantitativamente la frequenza di aggiornamento e la sincronizzazione tra robot e Digital Twin.
 - Verificare la formulazione matematica originale della metrica ODTE.
-- Migliorare il calcolo di timeliness, reliability e availability.
-- Misurare correttamente il tempo di elaborazione del Digital Twin.
+- Approfondire la definizione e il calcolo di Timeliness, Reliability e Availability.
+- Valutare la robustezza della gestione dei timestamp e del tempo di simulazione.
 - Validare sperimentalmente i risultati della metrica ODTE in scenari differenti.
 
 ---
@@ -704,12 +905,24 @@ Il progetto utilizza **Git** per il controllo di versione e **GitHub** per ospit
 
 ---
 
+## Riferimento bibliografico
+
+La metrica ODTE prende come riferimento il seguente lavoro scientifico:
+
+Paolo Bellavista et al., *ODTE: A Metric for Digital Twin Entanglement*, IEEE Open Journal of the Communications Society, 2024.
+
+DOI: `10.1109/OJCOMS.2024.3385659`
+
+---
+
 ## Nota conclusiva
 
 Il progetto costituisce una base per lo sviluppo di un Digital Twin del Franka FR3 in ambiente ROS 2 e Gazebo.
 
-Le funzionalità di acquisizione dello stato, gestione dei comandi e tracking sono state implementate e testate negli scenari descritti. Il nuovo `state_manager` pubblica inoltre una rappresentazione articolare filtrata su un topic dedicato al Digital Twin.
+Le funzionalità di acquisizione dello stato, gestione dei comandi e tracking sono state implementate e testate negli scenari descritti.
 
-Il `full_sequence_test` ha verificato con esito positivo una sequenza di tre movimenti, controllando il raggiungimento delle posizioni obiettivo e l'allineamento tra le posizioni del robot simulato e quelle pubblicate dal Digital Twin.
+Lo State Manager pubblica una rappresentazione articolare filtrata e le relative informazioni temporali. Il Command Manager gestisce l'invio dei comandi, ne monitora il completamento e pubblica un heartbeat utilizzato per valutare la disponibilità degli aggiornamenti.
 
-Il monitor ODTE è invece da considerarsi una componente sperimentale, che richiede ulteriori verifiche teoriche e sperimentali prima di poter essere utilizzata come misura validata della qualità della sincronizzazione.
+I test sperimentali hanno verificato il raggiungimento delle posizioni obiettivo, l'allineamento tra il robot simulato e il Digital Twin e il comportamento del sistema durante l'interruzione e il ripristino degli aggiornamenti.
+
+Il monitor ODTE rappresenta un ulteriore passo verso una valutazione quantitativa del Digital Twin, considerando entrambe le direzioni di comunicazione. Si tratta tuttavia di una componente sperimentale, che richiede ulteriori verifiche teoriche e sperimentali prima di poter essere utilizzata come misura scientificamente validata della qualità della sincronizzazione.
