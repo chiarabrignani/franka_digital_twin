@@ -154,9 +154,22 @@ La validazione comprende:
 - Assenza di valori non finiti.
 - Assenza di altri comandi in esecuzione.
 
+I principali parametri di configurazione sono:
+
+| Parametro | Valore predefinito | Descrizione |
+|---|---:|---|
+| `position_tolerance` | 0.01 rad | Tolleranza ammessa rispetto alla posizione obiettivo |
+| `stable_duration` | 0.5 s | Durata minima per cui tutti i giunti devono rimanere entro la tolleranza |
+| `command_timeout` | 10.0 s | Tempo massimo di esecuzione del comando |
+| `max_state_interval` | 0.05 s | Intervallo massimo ammesso tra aggiornamenti consecutivi dello stato articolare |
+
 Quando un comando viene accettato, il nodo gli assegna un identificativo e lo inoltra al controller attraverso `/fr3_position_controller/commands`.
 
-Il completamento viene verificato confrontando le posizioni articolari osservate con quelle richieste. Il comando viene considerato completato quando tutte le articolazioni raggiungono la tolleranza prevista e mantengono tale condizione per il tempo stabilito.
+Il completamento viene verificato confrontando le posizioni articolari osservate con quelle richieste. Il comando viene considerato completato quando tutte le sette articolazioni raggiungono la tolleranza prevista e mantengono tale condizione per il tempo stabilito.
+
+Durante il conteggio della stabilità, il nodo verifica anche la regolarità degli aggiornamenti ricevuti attraverso `/joint_states`. Se l'intervallo tra due aggiornamenti consecutivi supera il valore configurato in `max_state_interval`, il conteggio della stabilità viene azzerato e riavviato a partire dall'aggiornamento corrente, se tutte le articolazioni sono ancora entro la tolleranza prevista.
+
+Il conteggio viene inoltre azzerato se anche una sola articolazione esce dalla tolleranza prevista.
 
 Il nodo pubblica gli aggiornamenti sullo stato dei comandi attraverso `/digital_twin/command_status`.
 

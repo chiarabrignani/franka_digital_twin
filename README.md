@@ -115,7 +115,10 @@ Il completamento di un comando viene verificato considerando:
 | Numero di articolazioni | 7 |
 | Tolleranza sulla posizione | 0.01 rad |
 | Durata minima di stabilità | 0.5 s |
+| Intervallo massimo tra aggiornamenti dello stato | 0.05 s |
 | Timeout del comando | 10 s |
+
+Per considerare valido il mantenimento della posizione obiettivo, il nodo verifica che gli aggiornamenti dello stato articolare arrivino con una distanza temporale non superiore a `max_state_interval`. Se l'intervallo viene superato, il conteggio della stabilità viene azzerato e riavviato a partire dall'aggiornamento corrente, se tutte le articolazioni sono ancora entro la tolleranza prevista.
 
 Il nodo pubblica anche un heartbeat periodico attraverso `/digital_twin/physical_heartbeat`, utilizzato per monitorare la disponibilità degli aggiornamenti provenienti dal robot.
 
@@ -804,7 +807,7 @@ python3 -m pytest test -v
 Durante l'ultima esecuzione verificata, la suite ha prodotto il seguente risultato:
 
 ```text
-44 passed, 1 skipped, 8 warnings
+45 passed, 1 skipped, 8 warnings
 ```
 
 Il test saltato riguarda il controllo del copyright header. Gli avvisi riportati sono relativi all'utilizzo di `fork()` in un processo multi-thread.
@@ -863,6 +866,7 @@ La struttura riportata descrive l'organizzazione principale del progetto; i file
 - Gestione e inoltro dei comandi di posizione.
 - Validazione dei comandi ricevuti.
 - Monitoraggio del completamento dei comandi.
+- Verifica della regolarità degli aggiornamenti dello stato articolare durante il mantenimento della posizione obiettivo.
 - Pubblicazione dello stato dei comandi tramite `/digital_twin/command_status`.
 - Pubblicazione dell'heartbeat fisico tramite `/digital_twin/physical_heartbeat`.
 - Monitoraggio della freschezza degli aggiornamenti dello stato.

@@ -31,6 +31,7 @@ class CommandManager(Node):
         self.declare_parameter('position_tolerance', 0.01)
         self.declare_parameter('stable_duration', 0.5)
         self.declare_parameter('command_timeout', 10.0)
+        self.declare_parameter('max_state_interval', 0.05)
 
         self.position_tolerance = float(
             self.get_parameter('position_tolerance').value
@@ -44,12 +45,37 @@ class CommandManager(Node):
             self.get_parameter('command_timeout').value
         )
 
+        self.max_state_interval = float(
+            self.get_parameter('max_state_interval').value
+        )
+
+        if not math.isfinite(self.position_tolerance) or self.position_tolerance <= 0:
+            raise ValueError(
+                'position_tolerance deve essere un numero finito e maggiore di zero'
+            )
+
+        if not math.isfinite(self.stable_duration) or self.stable_duration <= 0:
+            raise ValueError(
+                'stable_duration deve essere un numero finito e maggiore di zero'
+            )
+
+        if not math.isfinite(self.command_timeout) or self.command_timeout <= 0:
+            raise ValueError(
+                'command_timeout deve essere un numero finito e maggiore di zero'
+            )
+
+        if not math.isfinite(self.max_state_interval) or self.max_state_interval <= 0:
+            raise ValueError(
+                'max_state_interval deve essere un numero finito e maggiore di zero'
+            )
+
         # Stato del comando attualmente in esecuzione
         self.active_command = None
         self.active_command_id = None
         self.command_start_time = None
         self.command_start_timestamp = None
         self.target_reached_time = None
+        self.last_target_update_time = None
         self.current_positions = {}
         self.last_joint_state_time = None
 
@@ -174,6 +200,7 @@ class CommandManager(Node):
         self.command_start_time = None
         self.command_start_timestamp = None
         self.target_reached_time = None
+        self.last_target_update_time = None
 
     def check_command_timeout(self):
         """Controlla periodicamente se il comando attivo è scaduto."""
@@ -236,16 +263,38 @@ class CommandManager(Node):
         )
 
         if all_joints_reached:
-            # Registra quando tutti i giunti raggiungono il bersaglio
+
+            # Primo aggiornamento entro la tolleranza:
+            # inizia il conteggio della stabilità.
             if self.target_reached_time is None:
                 self.target_reached_time = now
+                self.last_target_update_time = now
 
-            # Richiede che il bersaglio sia mantenuto per la durata prevista
-            elif now - self.target_reached_time >= self.stable_duration:
-                self.finish_command('completed', 'target_reached')
+            else:
+                # Verifica l'intervallo dall'ultimo aggiornamento.
+                state_interval = now - self.last_target_update_time
+
+                if state_interval > self.max_state_interval:
+                    # Aggiornamenti troppo distanti:
+                    # si ricomincia il conteggio.
+                    self.target_reached_time = now
+                    self.last_target_update_time = now
+
+                else:
+                    # Aggiornamento regolare:
+                    # aggiorna l'istante dell'ultima rilevazione.
+                    self.last_target_update_time = now
+
+                    # Verifica che la posizione sia stata mantenuta
+                    # entro la tolleranza per tutta la durata prevista.
+                    if now - self.target_reached_time >= self.stable_duration:
+                        self.finish_command('completed', 'target_reached')
+
         else:
-            # Se un giunto esce dalla tolleranza, ricomincia il conteggio
+            # Se anche un solo giunto esce dalla tolleranza,
+            # si azzera il conteggio della stabilità.
             self.target_reached_time = None
+            self.last_target_update_time = None
 
     def command_callback(self, msg):
         """Valida e inoltra un comando articolare al controller."""
@@ -289,6 +338,7 @@ class CommandManager(Node):
             self.get_clock().now().nanoseconds / 1e9
         )
         self.target_reached_time = None
+        self.last_target_update_time = None
 
         # Pubblica il comando verso il controller
         command = Float64MultiArray()

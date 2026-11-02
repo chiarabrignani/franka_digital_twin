@@ -122,12 +122,63 @@ def test_completes_command_after_stable_target(command_manager, monkeypatch):
     assert command_manager.target_reached_time == 101.0
     assert command_manager.active_command is not None
 
-    # Simula il mantenimento del bersaglio per 0,5 secondi
-    monkeypatch.setattr('time.monotonic', lambda: 101.6)
-    command_manager.joint_state_callback(message)
+    # Simula aggiornamenti regolari ogni 0,04 secondi
+    # per verificare il mantenimento del bersaglio.
+    for step in range(1, 14):
+        timestamp = 101.0 + step * 0.04
+
+        monkeypatch.setattr(
+            'time.monotonic',
+            lambda timestamp=timestamp: timestamp
+        )
+
+        command_manager.joint_state_callback(message)
 
     command_manager.publish_status.assert_called_once_with(
         'completed',
         'target_reached'
     )
     assert command_manager.active_command is None
+
+
+def test_resets_stability_after_delayed_update(command_manager, monkeypatch):
+    """Azzera il conteggio se gli aggiornamenti sono troppo distanti."""
+    command_manager.publish_status = Mock()
+
+    # Imposta un comando obiettivo per tutti i giunti
+    target = {
+        joint: 0.1
+        for joint in command_manager.joint_names
+    }
+    command_manager.active_command = target.copy()
+    command_manager.command_start_time = 99.0
+
+    # Prepara uno stato del robot esattamente sul bersaglio
+    message = JointState()
+    message.name = command_manager.joint_names
+    message.position = [0.1] * 7
+
+    # Primo aggiornamento: inizia il conteggio
+    monkeypatch.setattr('time.monotonic', lambda: 100.0)
+    command_manager.joint_state_callback(message)
+
+    assert command_manager.target_reached_time == 100.0
+
+    # Secondo aggiornamento dopo 40 ms: il conteggio continua
+    monkeypatch.setattr('time.monotonic', lambda: 100.04)
+    command_manager.joint_state_callback(message)
+
+    assert command_manager.target_reached_time == 100.0
+    assert command_manager.active_command is not None
+
+    # Terzo aggiornamento dopo 60 ms:
+    # il conteggio deve ripartire da zero.
+    monkeypatch.setattr('time.monotonic', lambda: 100.10)
+    command_manager.joint_state_callback(message)
+
+    assert command_manager.target_reached_time == 100.10
+    assert command_manager.last_target_update_time == 100.10
+    assert command_manager.active_command is not None
+
+    # Il comando non deve essere ancora completato.
+    command_manager.publish_status.assert_not_called()
