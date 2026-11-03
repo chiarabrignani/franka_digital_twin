@@ -118,6 +118,10 @@ Il completamento di un comando viene verificato considerando:
 | Intervallo massimo tra aggiornamenti dello stato | 0.05 s |
 | Timeout del comando | 10 s |
 
+Il parametro `position_tolerance` è configurabile dinamicamente tramite il sistema dei parametri ROS 2. La sua modifica viene recepita direttamente dal Command Manager senza necessità di riavviare il nodo.
+
+Il valore determina l'errore massimo ammesso tra la posizione articolare effettiva e quella desiderata per ciascuno dei sette giunti. Il comando viene considerato completato soltanto quando tutti i giunti rispettano contemporaneamente la tolleranza configurata e mantengono tale condizione per la durata minima di stabilità prevista.
+
 Per considerare valido il mantenimento della posizione obiettivo, il nodo verifica che gli aggiornamenti dello stato articolare arrivino con una distanza temporale non superiore a `max_state_interval`. Se l'intervallo viene superato, il conteggio della stabilità viene azzerato e riavviato a partire dall'aggiornamento corrente, se tutte le articolazioni sono ancora entro la tolleranza prevista.
 
 Il nodo pubblica anche un heartbeat periodico attraverso `/digital_twin/physical_heartbeat`, utilizzato per monitorare la disponibilità degli aggiornamenti provenienti dal robot.
@@ -206,7 +210,50 @@ In questo modo è possibile verificare sia il raggiungimento del comando sia l'a
 
 I risultati vengono salvati in un file CSV nella cartella `results/`.
 
-### 6. ODTE Metrics
+### 6. Validazione sperimentale della tolleranza di posizione
+
+Per individuare un valore adeguato per il parametro `position_tolerance`, è stata condotta una campagna sperimentale sul Command Manager.
+
+Inizialmente era stato adottato un valore di 0.01 rad come scelta progettuale preliminare. Successivamente, per verificarne l'adeguatezza, sono stati confrontati sei differenti valori di tolleranza:
+
+- 0.001 rad
+- 0.0025 rad
+- 0.005 rad
+- 0.01 rad
+- 0.02 rad
+- 0.05 rad
+
+Per ciascun valore sono state eseguite cinque ripetizioni dello stesso movimento articolare, applicando una variazione di +0.01 rad a ciascuno dei sette giunti rispetto alla configurazione iniziale.
+
+Durante gli esperimenti sono stati mantenuti costanti:
+- Configurazione iniziale del robot.
+- Posizioni articolari obiettivo.
+- Durata minima di stabilità: 0.5 s.
+- Timeout del comando: 10 s.
+- Intervallo massimo tra aggiornamenti dello stato: 0.05 s.
+
+Per ogni esecuzione è stato registrato il tempo di completamento (`elapsed_seconds`) pubblicato dal Command Manager.
+
+I risultati sono stati confrontati attraverso il tempo medio di completamento, il valore minimo e massimo e la deviazione standard campionaria.
+
+| Tolleranza (rad) | Tempo medio (s) | Minimo (s) | Massimo (s) | Deviazione standard (s) |
+|---:|---:|---:|---:|---:|
+| 0.001 | 0.73082 | 0.65856 | 0.97383 | 0.13635 |
+| 0.0025 | 0.63013 | 0.61983 | 0.63909 | 0.00777 |
+| 0.005 | 0.60731 | 0.59371 | 0.62079 | 0.01239 |
+| 0.01 | 0.58069 | 0.56424 | 0.58954 | 0.00982 |
+| 0.02 | 0.55403 | 0.53931 | 0.56219 | 0.00888 |
+| 0.05 | 0.55136 | 0.53661 | 0.56104 | 0.00975 |
+
+Tutte le 30 esecuzioni hanno raggiunto lo stato `completed`, senza registrare timeout.
+
+I risultati mostrano una diminuzione del tempo medio di completamento all'aumentare della tolleranza. Tuttavia, il miglioramento ottenuto passando da 0.02 rad a 0.05 rad è molto contenuto, pari a circa 2.67 ms.
+
+Sulla base dei risultati ottenuti, 0.02 rad viene considerato un possibile compromesso tra rapidità di completamento e precisione del posizionamento.
+
+La scelta rappresenta una valutazione sperimentale preliminare e non dimostra che tale valore sia universalmente ottimale.
+
+### 7. ODTE Metrics
 
 Il modulo `odte_metrics.py` contiene le funzioni matematiche utilizzate per il calcolo delle componenti della metrica ODTE.
 
@@ -232,7 +279,7 @@ dove:
 
 Le funzioni verificano la validità dei valori numerici ricevuti e sollevano un'eccezione `ValueError` in presenza di parametri non validi.
 
-### 7. ODTE Monitor
+### 8. ODTE Monitor
 
 Il modulo `odte_monitor.py` implementa un prototipo sperimentale per il monitoraggio della metrica ODTE.
 
@@ -877,6 +924,9 @@ La struttura riportata descrive l'organizzazione principale del progetto; i file
 - Implementazione delle funzioni matematiche di supporto per il calcolo ODTE.
 - Primo prototipo sperimentale di monitoraggio ODTE per entrambe le direzioni.
 - Test automatici dei principali componenti del package.
+- Validazione sperimentale di diversi valori del parametro `position_tolerance`.
+- Aggiornamento dinamico della tolleranza tramite parametri ROS 2.
+- Registrazione degli errori articolari finali al completamento dei comandi.
 
 ### Sviluppi futuri
 

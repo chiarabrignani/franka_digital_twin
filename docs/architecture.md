@@ -163,6 +163,10 @@ I principali parametri di configurazione sono:
 | `command_timeout` | 10.0 s | Tempo massimo di esecuzione del comando |
 | `max_state_interval` | 0.05 s | Intervallo massimo ammesso tra aggiornamenti consecutivi dello stato articolare |
 
+Il parametro `position_tolerance` può essere modificato dinamicamente durante l'esecuzione del nodo attraverso il sistema dei parametri ROS 2, senza necessità di riavviare il Command Manager. Il nodo verifica che il nuovo valore sia finito e strettamente maggiore di zero prima di applicarlo.
+
+Al completamento di un comando, il nodo registra inoltre gli errori assoluti finali delle sette articolazioni rispetto alle posizioni obiettivo, riportando l'identificativo del comando, la tolleranza utilizzata e il massimo errore articolare osservato.
+
 Quando un comando viene accettato, il nodo gli assegna un identificativo e lo inoltra al controller attraverso `/fr3_position_controller/commands`.
 
 Il completamento viene verificato confrontando le posizioni articolari osservate con quelle richieste. Il comando viene considerato completato quando tutte le sette articolazioni raggiungono la tolleranza prevista e mantengono tale condizione per il tempo stabilito.
@@ -173,7 +177,41 @@ Il conteggio viene inoltre azzerato se anche una sola articolazione esce dalla t
 
 Il nodo pubblica gli aggiornamenti sullo stato dei comandi attraverso `/digital_twin/command_status`.
 
-### 3.3 Synchronization Monitor
+### 3.3 Validazione sperimentale della tolleranza
+
+Per valutare l'influenza del parametro `position_tolerance` sul tempo di completamento dei comandi, è stata condotta una campagna sperimentale sul Command Manager.
+
+Sono stati confrontati sei valori di tolleranza:
+
+- 0.001 rad
+- 0.0025 rad
+- 0.005 rad
+- 0.01 rad
+- 0.02 rad
+- 0.05 rad
+
+Per ciascun valore sono state effettuate cinque ripetizioni dello stesso movimento, applicando una variazione di +0.01 rad a tutte le sette articolazioni rispetto alla configurazione iniziale.
+
+Durante le prove sono stati mantenuti costanti la configurazione iniziale, le posizioni obiettivo, la durata minima di stabilità (0.5 s), il timeout (10 s) e l'intervallo massimo tra gli aggiornamenti dello stato (0.05 s).
+
+Per ogni esecuzione è stato registrato il tempo di completamento (`elapsed_seconds`). I risultati sono stati analizzati considerando media, minimo, massimo e deviazione standard campionaria.
+
+| Tolleranza (rad) | Tempo medio (s) | Minimo (s) | Massimo (s) | Deviazione standard (s) |
+|---:|---:|---:|---:|---:|
+| 0.001 | 0.73082 | 0.65856 | 0.97383 | 0.13635 |
+| 0.0025 | 0.63013 | 0.61983 | 0.63909 | 0.00777 |
+| 0.005 | 0.60731 | 0.59371 | 0.62079 | 0.01239 |
+| 0.01 | 0.58069 | 0.56424 | 0.58954 | 0.00982 |
+| 0.02 | 0.55403 | 0.53931 | 0.56219 | 0.00888 |
+| 0.05 | 0.55136 | 0.53661 | 0.56104 | 0.00975 |
+
+Tutte le 30 esecuzioni si sono concluse correttamente, senza timeout.
+
+I risultati evidenziano una riduzione del tempo medio di completamento all'aumentare della tolleranza. Tuttavia, il miglioramento passando da 0.02 rad a 0.05 rad è contenuto, pari a circa 2.67 ms.
+
+Sulla base dei risultati ottenuti, 0.02 rad rappresenta un possibile compromesso tra rapidità di completamento e precisione del posizionamento. Tale scelta è da considerarsi preliminare e non dimostra che il valore sia universalmente ottimale.
+
+### 3.4 Synchronization Monitor
 
 Il nodo `synchronization_monitor` controlla la freschezza degli aggiornamenti ricevuti attraverso `/joint_states`.
 
@@ -183,7 +221,7 @@ Il monitor verifica quindi la continuità della comunicazione tra il robot simul
 
 Questa funzionalità è distinta dal confronto diretto tra le posizioni del robot e quelle del Digital Twin, che viene invece effettuato dai test di tracking.
 
-### 3.4 ODTE Monitor
+### 3.5 ODTE Monitor
 
 Il nodo `odte_monitor` raccoglie le informazioni prodotte dagli altri componenti per stimare la metrica ODTE.
 
@@ -415,7 +453,9 @@ L'architettura è stata progettata secondo alcuni principi fondamentali:
 - **Validazione dei dati:** i messaggi vengono controllati prima di essere utilizzati dai componenti successivi.
 - **Monitoraggio:** le informazioni temporali, gli eventi relativi ai comandi e gli heartbeat consentono di osservare il comportamento dei flussi.
 - **Estendibilità:** i moduli possono essere modificati o ampliati senza dover riprogettare l'intera architettura.
+- **Configurabilità:** il parametro `position_tolerance` può essere modificato dinamicamente durante l'esecuzione del Command Manager, consentendo di adattare la precisione richiesta.
+- **Validazione sperimentale:** differenti valori di tolleranza sono stati confrontati attraverso prove ripetute, analizzando i tempi di completamento e la loro variabilità.
 
 La separazione tra i flussi Physical → Digital e Digital → Physical permette inoltre di analizzare separatamente i due percorsi e di individuare eventuali criticità nella comunicazione tra robot e Digital Twin.
 
-Il sistema costituisce una base sperimentale per lo sviluppo e la valutazione di un Digital Twin del Franka FR3. In particolare, il monitoraggio ODTE potrà essere ulteriormente raffinato attraverso verifiche teoriche e sperimentali delle singole componenti.
+Il sistema costituisce una base sperimentale per lo sviluppo e la valutazione di un Digital Twin del Franka FR3. Le prove sulla tolleranza di posizione hanno permesso di individuare un possibile compromesso tra rapidità di completamento e precisione del posizionamento. Il monitoraggio ODTE potrà invece essere ulteriormente raffinato attraverso verifiche teoriche e sperimentali delle singole componenti.

@@ -3,6 +3,8 @@ import math
 import time
 import uuid
 
+from rcl_interfaces.msg import SetParametersResult
+
 import rclpy
 from rclpy.node import Node
 
@@ -47,6 +49,10 @@ class CommandManager(Node):
 
         self.max_state_interval = float(
             self.get_parameter('max_state_interval').value
+        )
+
+        self.add_on_set_parameters_callback(
+            self.parameters_callback
         )
 
         if not math.isfinite(self.position_tolerance) or self.position_tolerance <= 0:
@@ -132,6 +138,27 @@ class CommandManager(Node):
             'In attesa di comandi su /digital_twin/command_positions.'
         )
 
+    def parameters_callback(self, params):
+        for param in params:
+
+            if param.name == 'position_tolerance':
+
+                value = float(param.value)
+
+                if not math.isfinite(value) or value <= 0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='position_tolerance deve essere finito e maggiore di zero'
+                    )
+
+                self.position_tolerance = value
+
+                self.get_logger().info(
+                    f'Nuova tolleranza impostata: {self.position_tolerance:.6f} rad'
+                )
+
+        return SetParametersResult(successful=True)
+
     def publish_heartbeat(self):
         """Pubblica un heartbeat solo se gli stati del robot sono recenti."""
         heartbeat = Bool()
@@ -180,8 +207,40 @@ class CommandManager(Node):
         message.data = json.dumps(message_data)
         self.status_publisher.publish(message)
 
+    def log_final_errors(self):
+        """Registra gli errori articolari nell'ultimo aggiornamento."""
+        errors = {
+            joint: abs(
+                self.active_command[joint]
+                - self.current_positions[joint]
+            )
+            for joint in self.joint_names
+        }
+
+        max_error = max(errors.values())
+
+        self.get_logger().info(
+            f'Command ID: {self.active_command_id}'
+        )
+        self.get_logger().info(
+            f'Tolleranza utilizzata: {self.position_tolerance:.6f} rad'
+        )
+
+        for joint, error in errors.items():
+            self.get_logger().info(
+                f'{joint}: errore = {error:.6f} rad'
+            )
+
+        self.get_logger().info(
+            f'Errore massimo: {max_error:.6f} rad'
+        )
+
     def finish_command(self, status, reason):
         """Conclude il comando attivo e pubblica il risultato."""
+        # Registra gli errori articolari solo in caso di completamento.
+        if status == 'completed':
+            self.log_final_errors()
+
         self.publish_status(status, reason)
 
         if status == 'completed':
