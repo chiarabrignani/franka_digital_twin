@@ -12,6 +12,9 @@ from sensor_msgs.msg import JointState
 
 from std_msgs.msg import Bool, Float64MultiArray, String
 
+from rclpy.clock import Clock
+from rclpy.clock_type import ClockType
+
 
 class CommandManager(Node):
 
@@ -115,6 +118,12 @@ class CommandManager(Node):
             10
         )
 
+        self.accepted_command_publisher = self.create_publisher(
+            String,
+            '/digital_twin/accepted_command',
+            10,
+        )
+
         # Heartbeat del lato fisico per il monitor ODTE.
         self.heartbeat_publisher = self.create_publisher(
             Bool,
@@ -122,9 +131,14 @@ class CommandManager(Node):
             10,
         )
 
+        self.heartbeat_clock = Clock(
+            clock_type=ClockType.STEADY_TIME
+        )
+
         self.heartbeat_timer = self.create_timer(
             0.5,
             self.publish_heartbeat,
+            clock=self.heartbeat_clock,
         )
 
         # Timer per controllare il timeout indipendentemente da /joint_states
@@ -237,8 +251,24 @@ class CommandManager(Node):
 
     def finish_command(self, status, reason):
         """Conclude il comando attivo e pubblica il risultato."""
-        # Registra gli errori articolari solo in caso di completamento.
         if status == 'completed':
+
+            # Tempo effettivo necessario al PT per raggiungere il target
+            if self.target_reached_time is not None:
+                movement_duration = (
+                    self.target_reached_time - self.command_start_time
+                )
+
+                self.get_logger().info(
+                    f'Durata effettiva del movimento PT: '
+                    f'{movement_duration:.3f} s'
+                )
+
+                self.get_logger().info(
+                    f'Durata verifica stabilità: '
+                    f'{self.stable_duration:.3f} s'
+                )
+
             self.log_final_errors()
 
         self.publish_status(status, reason)
@@ -398,6 +428,21 @@ class CommandManager(Node):
         )
         self.target_reached_time = None
         self.last_target_update_time = None
+
+        # Pubblica il comando accettato dal Digital Twin.
+        accepted_data = {
+            'command_id': self.active_command_id,
+            'target_positions': [
+                self.active_command[joint]
+                for joint in self.joint_names
+            ],
+            'timestamp': self.command_start_timestamp,
+        }
+
+        accepted_msg = String()
+        accepted_msg.data = json.dumps(accepted_data)
+
+        self.accepted_command_publisher.publish(accepted_msg)
 
         # Pubblica il comando verso il controller
         command = Float64MultiArray()

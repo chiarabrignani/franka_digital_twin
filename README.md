@@ -70,9 +70,7 @@ Le principali responsabilità sono:
 
 Il topic `/digital_twin/joint_states` utilizza il tipo di messaggio `sensor_msgs/msg/JointState`.
 
-Il nodo pubblica inoltre le informazioni temporali attraverso:
-
-- `/digital_twin/state_timing`
+Lo State Manager pubblica inoltre informazioni temporali relative agli aggiornamenti dello stato fisico attraverso il topic `/digital_twin/state_timing`. Queste informazioni sono mantenute separate dal flusso utilizzato dal monitor ODTE, che riceve gli eventi di elaborazione dal Digital Model attraverso il topic `/digital_twin/state_processed`.
 
 Il messaggio temporale viene pubblicato utilizzando `std_msgs/msg/String` e contiene un oggetto JSON con i seguenti campi:
 
@@ -81,8 +79,6 @@ Il messaggio temporale viene pubblicato utilizzando `std_msgs/msg/String` e cont
 | `generation_timestamp` | Timestamp associato alla generazione dello stato |
 | `reception_timestamp` | Timestamp di ricezione dello stato |
 | `processing_time_seconds` | Tempo impiegato per l'elaborazione del messaggio |
-
-Queste informazioni vengono utilizzate dal monitor ODTE per la valutazione del percorso Physical → Digital.
 
 ### 2. Command Manager
 
@@ -128,21 +124,33 @@ Il nodo pubblica anche un heartbeat periodico attraverso `/digital_twin/physical
 
 L'heartbeat viene pubblicato con una frequenza di 2 Hz e indica se lo stato articolare del robot è stato ricevuto recentemente.
 
-### 3. Synchronization Monitor
+### 3. Diagnostica della sincronizzazione PT-DT
 
-Il nodo `synchronization_monitor.py` controlla la freschezza degli aggiornamenti ricevuti attraverso `/joint_states`.
+Le funzionalità di monitoraggio della sincronizzazione tra Physical Twin (PT) e Digital Twin (DT) sono integrate nel nodo `odte_monitor.py`.
 
-Il monitor utilizza una soglia temporale per individuare eventuali interruzioni o ritardi significativi nella ricezione dei dati.
+Il nodo riceve gli stati articolari attraverso:
 
-Le principali responsabilità sono:
+- `/joint_states`: stato del Physical Twin.
+- `/digital_twin/predicted_joint_states`: stato predetto dal Digital Twin.
 
-- Verificare la presenza delle sette articolazioni richieste.
-- Registrare l'istante di ricezione degli aggiornamenti validi.
-- Controllare periodicamente da quanto tempo non vengono ricevuti nuovi dati.
-- Segnalare il passaggio a uno stato non sincronizzato.
-- Segnalare il ripristino della ricezione regolare degli aggiornamenti.
+Gli aggiornamenti vengono validati e memorizzati in code temporanee. Successivamente, gli stati PT e DT vengono associati sulla base dei rispettivi timestamp, utilizzando una tolleranza temporale configurabile.
 
-Il monitor verifica la freschezza dei dati ricevuti, ma non costituisce da solo una misura completa dell'errore tra lo stato del robot e quello del Digital Twin.
+Per ogni coppia di stati associata vengono calcolati:
+
+- Errore articolare assoluto per ciascuno dei sette giunti.
+- Errore medio assoluto (MAE).
+- Errore articolare massimo.
+- Differenza temporale tra i timestamp dei due stati.
+
+Il nodo mantiene inoltre statistiche aggregate dei confronti effettuati, tra cui l'errore medio, l'errore massimo e il giunto che presenta l'errore più elevato.
+
+La diagnostica distingue tre condizioni:
+
+- `SYNCHRONIZED`: entrambi i flussi sono disponibili e vengono confrontati correttamente.
+- `TEMPORAL_MISMATCH`: i flussi sono disponibili, ma non sono presenti confronti temporali validi e recenti.
+- `DATA_UNAVAILABLE`: uno dei due flussi non è disponibile oppure i dati ricevuti sono troppo vecchi.
+
+Queste informazioni hanno finalità diagnostiche e rimangono separate dal calcolo delle componenti della metrica ODTE.
 
 ### 4. Tracking Test
 
@@ -285,9 +293,11 @@ Il modulo `odte_monitor.py` implementa un prototipo sperimentale per il monitora
 
 Il nodo si sottoscrive ai seguenti topic:
 
-- `/digital_twin/state_timing`
+- `/digital_twin/state_processed`
 - `/digital_twin/physical_heartbeat`
 - `/digital_twin/command_status`
+- `/joint_states`
+- `/digital_twin/predicted_joint_states`
 
 Il monitor elabora le informazioni ricevute e pubblica i risultati attraverso:
 
@@ -303,7 +313,7 @@ Questa direzione rappresenta il trasferimento dello stato articolare dal robot a
 
 Le componenti vengono determinate nel modo seguente:
 
-- **Timeliness (`T`):** valuta la tempestività degli aggiornamenti sulla base delle informazioni temporali ricevute dallo State Manager.
+- **Timeliness (`T`):** valuta la tempestività degli aggiornamenti utilizzando le informazioni temporali contenute negli eventi pubblicati dal Digital Model attraverso `/digital_twin/state_processed`. Il calcolo considera il tempo trascorso tra la generazione dello stato fisico e la sua ricezione da parte del Digital Model, sommato al tempo di elaborazione.
 - **Reliability (`R`):** confronta la frequenza di aggiornamento misurata con quella attesa.
 - **Availability (`A`):** viene impostata a 1 in questa direzione, in quanto la disponibilità non viene misurata indipendentemente attraverso il monitoraggio dei comandi.
 
@@ -321,6 +331,24 @@ I comandi rifiutati non vengono conteggiati tra quelli accettati.
 
 Quando non sono presenti comandi accettati, le componenti Timeliness e Reliability vengono impostate a zero. Il monitor continua comunque a pubblicare i risultati.
 
+#### Diagnostica della sincronizzazione PT-DT
+
+Oltre al calcolo delle metriche ODTE, il nodo integra una diagnostica indipendente della sincronizzazione tra Physical Twin e Digital Twin.
+
+Gli stati articolari ricevuti vengono associati in base ai timestamp e confrontati per calcolare gli errori articolari.
+
+La diagnostica monitora:
+
+- Disponibilità e freschezza dei dati PT e DT.
+- Differenza temporale tra gli stati associati.
+- Errore articolare assoluto per ciascun giunto.
+- Errore medio assoluto (MAE).
+- Errore massimo e giunto corrispondente.
+
+Lo stato della sincronizzazione può assumere tre valori: `SYNCHRONIZED`, `TEMPORAL_MISMATCH` e `DATA_UNAVAILABLE`.
+
+Queste informazioni non vengono utilizzate per modificare il valore ODTE, ma forniscono un'indicazione aggiuntiva sulla coerenza temporale e articolare tra le due rappresentazioni.
+
 #### Parametri configurabili
 
 Il monitor dispone di parametri per configurare le soglie temporali, le frequenze attese e la finestra di osservazione.
@@ -330,9 +358,10 @@ Il monitor dispone di parametri per configurare le soglie temporali, le frequenz
 | `expected_rate_hz` | 100.0 | Frequenza di aggiornamento attesa per il percorso Physical → Digital |
 | `desired_timeliness_ms` | 50.0 | Soglia temporale desiderata per il percorso Physical → Digital |
 | `window_seconds` | 10.0 | Finestra temporale di osservazione |
-| `heartbeat_timeout` | 1.5 | Parametro configurato per il monitoraggio dell'heartbeat, non ancora utilizzato direttamente nel calcolo attuale di Availability |
-| `expected_heartbeat_rate_hz` | 2.0 | Frequenza attesa degli heartbeat |
+| `heartbeat_timeout` | 1.5 | Intervallo massimo utilizzato per considerare valido un heartbeat |
 | `command_timeliness_ms` | 10000.0 | Soglia temporale per il completamento dei comandi |
+| `max_data_age` | 2.0 | Età massima ammessa per considerare disponibili gli stati PT e DT |
+| `timestamp_tolerance` | 0.02 | Differenza temporale massima tra due stati per associarli nel confronto PT-DT |
 
 I valori predefiniti possono essere modificati attraverso i parametri ROS 2.
 
@@ -356,27 +385,33 @@ flowchart TD
     B["/joint_states"]
     C["State Manager"]
     D["/digital_twin/joint_states"]
-    E["Digital Twin: stato articolare"]
+    E["Digital Model"]
     F["/digital_twin/state_timing"]
-    G["ODTE Monitor"]
-    H["Synchronization Monitor"]
+    G["/digital_twin/state_processed"]
+    H["/digital_twin/predicted_joint_states"]
+    I["ODTE Monitor"]
 
     A --> B
     B --> C
     C --> D
     C --> F
     D --> E
-    F --> G
-    B --> H
+    E --> G
+    E --> H
+    G --> I
+    B --> I
+    H --> I
 ```
 
-Il robot simulato pubblica lo stato articolare su `/joint_states`.
+Il robot simulato pubblica lo stato articolare sul topic `/joint_states`.
 
-Lo State Manager verifica i dati ricevuti e pubblica lo stato filtrato su `/digital_twin/joint_states`.
+Lo State Manager riceve gli aggiornamenti, verifica la validità dei dati e pubblica lo stato filtrato su `/digital_twin/joint_states`.
 
-Inoltre, pubblica le informazioni temporali su `/digital_twin/state_timing`, utilizzate dall'ODTE Monitor per valutare il percorso Physical → Digital.
+Inoltre, pubblica le informazioni temporali relative alla generazione, alla ricezione e all'elaborazione degli aggiornamenti attraverso `/digital_twin/state_timing`.
 
-Il Synchronization Monitor riceve gli aggiornamenti da `/joint_states` per svolgere le proprie attività di monitoraggio.
+Il Digital Model riceve lo stato articolare del Digital Twin, lo elabora e pubblica le informazioni relative al processo attraverso `/digital_twin/state_processed`.
+
+L'ODTE Monitor utilizza le informazioni ricevute da `/digital_twin/state_processed` per valutare il percorso Physical → Digital. Riceve inoltre gli stati articolari da `/joint_states` e `/digital_twin/predicted_joint_states` per effettuare il confronto temporale e articolare tra Physical Twin e Digital Twin.
 
 ### Invio dei comandi
 
@@ -479,6 +514,8 @@ I principali topic utilizzati dal progetto sono riportati nella tabella seguente
 | `/digital_twin/command_status` | `std_msgs/msg/String` | Pubblicazione dello stato dei comandi in formato JSON |
 | `/digital_twin/physical_heartbeat` | `std_msgs/msg/Bool` | Pubblicazione dell'heartbeat relativo alla disponibilità degli aggiornamenti fisici |
 | `/digital_twin/odte` | `std_msgs/msg/String` | Pubblicazione delle metriche ODTE in formato JSON |
+| `/digital_twin/state_processed` | `std_msgs/msg/String` | Pubblicazione delle informazioni relative all'elaborazione dello stato da parte del Digital Model |
+| `/digital_twin/predicted_joint_states` | `sensor_msgs/msg/JointState` | Pubblicazione dello stato articolare predetto dal Digital Model |
 
 ---
 
@@ -598,14 +635,6 @@ Avvia il nodo responsabile della gestione dei comandi di posizione e della pubbl
 ros2 run franka_dt command_manager
 ```
 
-### Synchronization Monitor
-
-Avvia il monitor della freschezza degli aggiornamenti:
-
-```bash
-ros2 run franka_dt synchronization_monitor
-```
-
 ### Tracking Test
 
 Avvia il test di tracking delle articolazioni selezionate:
@@ -628,7 +657,7 @@ Al termine, i risultati vengono salvati in un file CSV nella cartella `results/`
 
 ### ODTE Monitor
 
-Avvia il prototipo sperimentale per il calcolo della metrica ODTE:
+Avvia il nodo responsabile del calcolo delle metriche ODTE bidirezionali e della diagnostica della sincronizzazione tra Physical Twin e Digital Twin:
 
 ```bash
 ros2 run franka_dt odte_monitor --ros-args \
@@ -668,11 +697,17 @@ Il messaggio pubblicato dal Digital Twin contiene i sette giunti del braccio FR3
 
 Il completamento viene comunicato attraverso `/digital_twin/command_status`.
 
-### 3. Verifica del Synchronization Monitor
+### 3. Verifica della diagnostica della sincronizzazione PT-DT
 
-Il monitor è stato verificato simulando un'interruzione degli aggiornamenti dello stato articolare.
+La diagnostica della sincronizzazione è integrata nel nodo `odte_monitor.py`.
 
-La procedura prevede l'arresto e il successivo riavvio del `joint_state_broadcaster`, in modo da osservare il comportamento del monitor quando gli aggiornamenti non arrivano più e quando riprendono.
+Il monitor confronta gli stati articolari ricevuti dal Physical Twin e dal Digital Twin, associandoli sulla base dei timestamp.
+
+Vengono monitorati la disponibilità dei flussi, la freschezza dei dati, la differenza temporale tra gli stati associati e gli errori articolari.
+
+La diagnostica distingue tre condizioni: `SYNCHRONIZED`, `TEMPORAL_MISMATCH` e `DATA_UNAVAILABLE`.
+
+Le verifiche sperimentali della nuova implementazione saranno documentate dopo aver completato i test funzionali.
 
 ### 4. Tracking Test
 
@@ -879,7 +914,6 @@ franka_digital_twin/
     │   ├── __init__.py
     │   ├── command_manager.py
     │   ├── state_manager.py
-    │   ├── synchronization_monitor.py
     │   ├── odte_monitor.py
     │   ├── odte_metrics.py
     │   ├── tracking_test.py
@@ -916,7 +950,8 @@ La struttura riportata descrive l'organizzazione principale del progetto; i file
 - Verifica della regolarità degli aggiornamenti dello stato articolare durante il mantenimento della posizione obiettivo.
 - Pubblicazione dello stato dei comandi tramite `/digital_twin/command_status`.
 - Pubblicazione dell'heartbeat fisico tramite `/digital_twin/physical_heartbeat`.
-- Monitoraggio della freschezza degli aggiornamenti dello stato.
+- Monitoraggio della disponibilità e della freschezza degli stati del Physical Twin e del Digital Twin.
+- Diagnostica della sincronizzazione PT-DT attraverso il confronto temporale e articolare dei sette giunti.
 - Test del raggiungimento simultaneo di posizioni articolari.
 - Test completo di una sequenza di tre movimenti sulle sette articolazioni.
 - Verifica dell'allineamento tra lo stato del robot e quello pubblicato dal Digital Twin.

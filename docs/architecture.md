@@ -2,29 +2,25 @@
 
 ## 1. Panoramica
 
-Il sistema implementa un Digital Twin del robot Franka FR3 attraverso un'architettura modulare basata su ROS 2 Jazzy.
+Il progetto implementa un Digital Twin del robot Franka FR3 attraverso un'architettura modulare basata su ROS 2 Jazzy e Gazebo.
 
-L'architettura è organizzata intorno a due flussi principali:
+Il sistema è organizzato intorno a due flussi di comunicazione:
 
-- **Physical → Digital (P→D):** acquisizione dello stato articolare del robot e aggiornamento della sua rappresentazione digitale.
+- **Physical → Digital (P→D):** acquisizione dello stato articolare del robot e aggiornamento della rappresentazione digitale.
 - **Digital → Physical (D→P):** invio dei comandi di posizione dal Digital Twin al robot simulato.
 
-I componenti comunicano attraverso topic ROS 2, utilizzando messaggi standard e messaggi JSON per lo scambio delle informazioni di monitoraggio.
-
-L'architettura comprende inoltre un sistema di monitoraggio della sincronizzazione e un prototipo sperimentale per il calcolo della metrica ODTE.
+L'architettura comprende inoltre un sistema di diagnostica della sincronizzazione tra Physical Twin e Digital Twin, integrato nel nodo `odte_monitor`, e un prototipo sperimentale per il calcolo della metrica ODTE (Overall Digital Twin Entanglement).
 
 ---
 
 ## 2. Architettura complessiva
 
-L'architettura complessiva del Digital Twin è rappresentata nello schema seguente.
+Il sistema è composto da quattro aree funzionali:
 
-Il sistema è organizzato intorno a due flussi di comunicazione principali, che collegano il robot Franka FR3 simulato alla sua rappresentazione digitale:
-
-- **Physical → Digital:** trasferimento dello stato articolare dal robot al Digital Twin.
-- **Digital → Physical:** trasferimento dei comandi di posizione dal Digital Twin al robot.
-
-I due flussi sono gestiti da nodi ROS 2 distinti e monitorati attraverso componenti dedicati.
+- **Ambiente fisico simulato:** robot Franka FR3, controller e pubblicazione degli stati articolari.
+- **Gestione del Digital Twin:** acquisizione degli stati, aggiornamento del modello digitale e gestione dei comandi.
+- **Monitoraggio:** calcolo delle componenti ODTE e diagnostica della sincronizzazione.
+- **Verifica:** test di tracking e sequenze di movimento per valutare il comportamento del sistema.
 
 ### Schema generale
 
@@ -42,42 +38,45 @@ flowchart TB
 
     subgraph DIGITAL["SISTEMA DIGITAL TWIN - ROS 2"]
 
-        subgraph P2D["FLUSSO PHYSICAL → DIGITAL"]
+        subgraph P2D["PHYSICAL → DIGITAL"]
             STATE["State Manager"]
             DT_STATE["/digital_twin/joint_states"]
-            TIMING["/digital_twin/state_timing"]
+            MODEL["Digital Model"]
+            PROCESSED["/digital_twin/state_processed"]
+            PREDICTED["/digital_twin/predicted_joint_states"]
 
             STATE --> DT_STATE
-            STATE --> TIMING
+            DT_STATE --> MODEL
+            MODEL --> PROCESSED
+            MODEL --> PREDICTED
         end
 
-        subgraph D2P["FLUSSO DIGITAL → PHYSICAL"]
-            INPUT_TOPIC["/digital_twin/command_positions"]
+        subgraph D2P["DIGITAL → PHYSICAL"]
+            INPUT["/digital_twin/command_positions"]
             COMMAND["Command Manager"]
+            ACCEPTED["/digital_twin/accepted_command"]
             COMMAND_TOPIC["/fr3_position_controller/commands"]
             STATUS["/digital_twin/command_status"]
             HEARTBEAT["/digital_twin/physical_heartbeat"]
 
-            INPUT_TOPIC --> COMMAND
+            INPUT --> COMMAND
+            COMMAND --> ACCEPTED
             COMMAND --> COMMAND_TOPIC
             COMMAND --> STATUS
             COMMAND --> HEARTBEAT
         end
 
-        SYNC["Synchronization Monitor"]
-
-        subgraph MONITORING["MONITORAGGIO ODTE"]
-            METRICS["ODTE Metrics"]
+        subgraph MONITORING["MONITORAGGIO"]
             ODTE["ODTE Monitor"]
+            METRICS["ODTE Metrics"]
             RESULTS["/digital_twin/odte"]
 
             ODTE --> METRICS
             ODTE --> RESULTS
         end
-
     end
 
-    subgraph TESTS["VERIFICA DEL SISTEMA"]
+    subgraph TESTS["VERIFICA"]
         TRACKING["Tracking Test"]
         SEQUENCE["Full Sequence Test"]
         CSV["Risultati CSV"]
@@ -87,32 +86,20 @@ flowchart TB
     end
 
     JOINTS --> STATE
-    JOINTS --> SYNC
     JOINTS --> COMMAND
+    JOINTS --> ODTE
+
+    ACCEPTED --> MODEL
+
+    PROCESSED --> ODTE
+    PREDICTED --> ODTE
+    STATUS --> ODTE
+    HEARTBEAT --> ODTE
 
     DT_STATE --> TRACKING
     DT_STATE --> SEQUENCE
-
     COMMAND_TOPIC --> CONTROLLER
-
-    TIMING --> ODTE
-    STATUS --> ODTE
-    HEARTBEAT --> ODTE
 ```
-
-### Descrizione dell'architettura
-
-L'architettura può essere suddivisa in quattro aree funzionali:
-
-1. **Ambiente di simulazione:** comprende il robot Franka FR3 simulato in Gazebo e il controller responsabile dell'esecuzione dei comandi di posizione. Il robot pubblica il proprio stato articolare attraverso `/joint_states`.
-
-2. **Gestione del Digital Twin:** comprende lo State Manager e il Command Manager. Il primo acquisisce e pubblica lo stato articolare, mentre il secondo gestisce i comandi diretti al robot.
-
-3. **Monitoraggio:** comprende il Synchronization Monitor e l'ODTE Monitor. Il primo controlla la freschezza degli aggiornamenti, mentre il secondo elabora le informazioni temporali, gli eventi relativi ai comandi e gli heartbeat per stimare le componenti della metrica ODTE.
-
-4. **Verifica del sistema:** comprende i moduli Tracking Test e Full Sequence Test, utilizzati per verificare il raggiungimento delle posizioni desiderate e l'allineamento tra lo stato del robot e quello del Digital Twin. I risultati vengono registrati in file CSV.
-
-I collegamenti tra i componenti rappresentano i principali flussi di dati attraverso i topic ROS 2. Lo schema fornisce quindi una visione d'insieme delle interazioni tra simulazione, rappresentazione digitale, gestione dei comandi e monitoraggio.
 
 ---
 
@@ -120,139 +107,103 @@ I collegamenti tra i componenti rappresentano i principali flussi di dati attrav
 
 ### 3.1 State Manager
 
-Il nodo `state_manager` gestisce il flusso Physical → Digital.
+Il nodo `state_manager` gestisce l'acquisizione e la validazione dello stato articolare del Physical Twin.
 
-Riceve gli aggiornamenti articolari dal topic `/joint_states` e verifica la validità dei dati prima di aggiornare la rappresentazione digitale.
+Si sottoscrive al topic `/joint_states` e verifica:
 
-In particolare:
+- La corrispondenza tra nomi delle articolazioni e posizioni.
+- La presenza delle sette articolazioni del Franka FR3.
+- La validità numerica dei valori ricevuti.
 
-- Controlla la corrispondenza tra nomi dei giunti e posizioni.
-- Verifica la presenza delle sette articolazioni del braccio FR3.
-- Controlla che le posizioni siano valori finiti.
-- Organizza i dati articolari secondo un ordine deterministico.
-- Aggiorna lo stato interno del Digital Twin.
-- Pubblica lo stato elaborato su `/digital_twin/joint_states`.
+Dopo la validazione, organizza i dati secondo un ordine deterministico e pubblica lo stato elaborato su `/digital_twin/joint_states`.
 
-Il nodo raccoglie inoltre informazioni temporali relative all'aggiornamento:
-
-- Timestamp di generazione dello stato.
-- Timestamp di ricezione.
-- Tempo di elaborazione del callback.
-
-Queste informazioni vengono pubblicate su `/digital_twin/state_timing` e utilizzate dall'ODTE Monitor.
+Il nodo pubblica inoltre informazioni temporali relative alla ricezione e all'elaborazione degli stati attraverso `/digital_twin/state_timing`. Questo flusso è separato da quello utilizzato dall'ODTE Monitor.
 
 ### 3.2 Command Manager
 
 Il nodo `command_manager` gestisce il flusso Digital → Physical.
 
-Riceve un array di posizioni desiderate attraverso `/digital_twin/command_positions` e verifica la validità del comando prima di inoltrarlo al controller del robot.
+Riceve le posizioni desiderate attraverso `/digital_twin/command_positions` e verifica la validità del comando prima di inoltrarlo al controller.
 
 La validazione comprende:
 
-- Presenza esattamente di sette valori.
-- Validità numerica dei valori ricevuti.
-- Assenza di valori non finiti.
+- Presenza di esattamente sette valori.
+- Validità numerica e assenza di valori non finiti.
 - Assenza di altri comandi in esecuzione.
 
-I principali parametri di configurazione sono:
+Quando un comando viene accettato, il nodo gli assegna un identificativo e pubblica le informazioni relative all'accettazione attraverso `/digital_twin/accepted_command`.
 
-| Parametro | Valore predefinito | Descrizione |
-|---|---:|---|
-| `position_tolerance` | 0.01 rad | Tolleranza ammessa rispetto alla posizione obiettivo |
-| `stable_duration` | 0.5 s | Durata minima per cui tutti i giunti devono rimanere entro la tolleranza |
-| `command_timeout` | 10.0 s | Tempo massimo di esecuzione del comando |
-| `max_state_interval` | 0.05 s | Intervallo massimo ammesso tra aggiornamenti consecutivi dello stato articolare |
+Il comando viene inoltrato al controller tramite `/fr3_position_controller/commands`.
 
-Il parametro `position_tolerance` può essere modificato dinamicamente durante l'esecuzione del nodo attraverso il sistema dei parametri ROS 2, senza necessità di riavviare il Command Manager. Il nodo verifica che il nuovo valore sia finito e strettamente maggiore di zero prima di applicarlo.
+Il completamento viene verificato confrontando le posizioni articolari osservate con quelle desiderate. Il nodo pubblica gli aggiornamenti sullo stato del comando attraverso `/digital_twin/command_status`.
 
-Al completamento di un comando, il nodo registra inoltre gli errori assoluti finali delle sette articolazioni rispetto alle posizioni obiettivo, riportando l'identificativo del comando, la tolleranza utilizzata e il massimo errore articolare osservato.
+Il Command Manager pubblica inoltre un heartbeat su `/digital_twin/physical_heartbeat`, utilizzato per monitorare la disponibilità del sistema.
 
-Quando un comando viene accettato, il nodo gli assegna un identificativo e lo inoltra al controller attraverso `/fr3_position_controller/commands`.
+### 3.3 Digital Model
 
-Il completamento viene verificato confrontando le posizioni articolari osservate con quelle richieste. Il comando viene considerato completato quando tutte le sette articolazioni raggiungono la tolleranza prevista e mantengono tale condizione per il tempo stabilito.
+Il nodo `digital_model` gestisce una rappresentazione digitale autonoma del robot Franka FR3.
 
-Durante il conteggio della stabilità, il nodo verifica anche la regolarità degli aggiornamenti ricevuti attraverso `/joint_states`. Se l'intervallo tra due aggiornamenti consecutivi supera il valore configurato in `max_state_interval`, il conteggio della stabilità viene azzerato e riavviato a partire dall'aggiornamento corrente, se tutte le articolazioni sono ancora entro la tolleranza prevista.
+Si sottoscrive a:
 
-Il conteggio viene inoltre azzerato se anche una sola articolazione esce dalla tolleranza prevista.
+- `/digital_twin/joint_states`, per ricevere gli stati articolari elaborati dallo State Manager.
+- `/digital_twin/accepted_command`, per ricevere i comandi accettati dal Command Manager.
 
-Il nodo pubblica gli aggiornamenti sullo stato dei comandi attraverso `/digital_twin/command_status`.
+Il primo stato fisico valido viene utilizzato per inizializzare la rappresentazione digitale. Successivamente, il modello evolve autonomamente sulla base dei comandi ricevuti, senza correggere continuamente la traiettoria utilizzando gli aggiornamenti fisici.
 
-### 3.3 Validazione sperimentale della tolleranza
+Per ciascun comando accettato, genera una traiettoria articolare basata su un profilo trapezoidale o triangolare, configurato attraverso i limiti di velocità, accelerazione e decelerazione.
 
-Per valutare l'influenza del parametro `position_tolerance` sul tempo di completamento dei comandi, è stata condotta una campagna sperimentale sul Command Manager.
+Il nodo pubblica:
 
-Sono stati confrontati sei valori di tolleranza:
+- `/digital_twin/predicted_joint_states`, contenente le posizioni e le velocità articolari previste.
+- `/digital_twin/state_processed`, contenente le informazioni temporali relative all'elaborazione degli aggiornamenti fisici.
 
-- 0.001 rad
-- 0.0025 rad
-- 0.005 rad
-- 0.01 rad
-- 0.02 rad
-- 0.05 rad
+Il secondo flusso viene utilizzato dall'ODTE Monitor per valutare la Timeliness del percorso Physical → Digital.
 
-Per ciascun valore sono state effettuate cinque ripetizioni dello stesso movimento, applicando una variazione di +0.01 rad a tutte le sette articolazioni rispetto alla configurazione iniziale.
+### 3.4 ODTE Monitor
 
-Durante le prove sono stati mantenuti costanti la configurazione iniziale, le posizioni obiettivo, la durata minima di stabilità (0.5 s), il timeout (10 s) e l'intervallo massimo tra gli aggiornamenti dello stato (0.05 s).
+Il nodo `odte_monitor` svolge due funzioni principali:
 
-Per ogni esecuzione è stato registrato il tempo di completamento (`elapsed_seconds`). I risultati sono stati analizzati considerando media, minimo, massimo e deviazione standard campionaria.
+- Calcolo sperimentale della metrica ODTE per i due flussi di comunicazione.
+- Diagnostica della sincronizzazione tra Physical Twin e Digital Twin.
 
-| Tolleranza (rad) | Tempo medio (s) | Minimo (s) | Massimo (s) | Deviazione standard (s) |
-|---:|---:|---:|---:|---:|
-| 0.001 | 0.73082 | 0.65856 | 0.97383 | 0.13635 |
-| 0.0025 | 0.63013 | 0.61983 | 0.63909 | 0.00777 |
-| 0.005 | 0.60731 | 0.59371 | 0.62079 | 0.01239 |
-| 0.01 | 0.58069 | 0.56424 | 0.58954 | 0.00982 |
-| 0.02 | 0.55403 | 0.53931 | 0.56219 | 0.00888 |
-| 0.05 | 0.55136 | 0.53661 | 0.56104 | 0.00975 |
+Si sottoscrive ai seguenti topic:
 
-Tutte le 30 esecuzioni si sono concluse correttamente, senza timeout.
-
-I risultati evidenziano una riduzione del tempo medio di completamento all'aumentare della tolleranza. Tuttavia, il miglioramento passando da 0.02 rad a 0.05 rad è contenuto, pari a circa 2.67 ms.
-
-Sulla base dei risultati ottenuti, 0.02 rad rappresenta un possibile compromesso tra rapidità di completamento e precisione del posizionamento. Tale scelta è da considerarsi preliminare e non dimostra che il valore sia universalmente ottimale.
-
-### 3.4 Synchronization Monitor
-
-Il nodo `synchronization_monitor` controlla la freschezza degli aggiornamenti ricevuti attraverso `/joint_states`.
-
-Il suo obiettivo è individuare eventuali interruzioni nella ricezione dei dati e segnalare il conseguente stato di mancato aggiornamento.
-
-Il monitor verifica quindi la continuità della comunicazione tra il robot simulato e il sistema di acquisizione.
-
-Questa funzionalità è distinta dal confronto diretto tra le posizioni del robot e quelle del Digital Twin, che viene invece effettuato dai test di tracking.
-
-### 3.5 ODTE Monitor
-
-Il nodo `odte_monitor` raccoglie le informazioni prodotte dagli altri componenti per stimare la metrica ODTE.
-
-Si sottoscrive a tre topic:
-
-- `/digital_twin/state_timing`
+- `/digital_twin/state_processed`
 - `/digital_twin/physical_heartbeat`
 - `/digital_twin/command_status`
+- `/joint_states`
+- `/digital_twin/predicted_joint_states`
 
-Il monitor elabora separatamente i due flussi di comunicazione e pubblica i risultati su `/digital_twin/odte`.
+Per la diagnostica, associa gli stati articolari del Physical Twin e del Digital Twin utilizzando i rispettivi timestamp, entro una tolleranza temporale configurabile.
 
-Il calcolo delle componenti matematiche è supportato dal modulo `odte_metrics.py`, che contiene le funzioni per Timeliness, Reliability e ODTE.
+Per ogni coppia di stati associati calcola gli errori articolari, il Mean Absolute Error (MAE), il massimo errore e la differenza temporale tra gli aggiornamenti.
+
+Lo stato della sincronizzazione può assumere tre valori:
+
+- `SYNCHRONIZED`: i dati sono aggiornati e temporalmente compatibili.
+- `TEMPORAL_MISMATCH`: i dati sono disponibili, ma non è possibile associare correttamente gli aggiornamenti.
+- `DATA_UNAVAILABLE`: uno o entrambi i flussi non forniscono dati sufficientemente aggiornati.
+
+Le informazioni diagnostiche sono mantenute separate dal calcolo delle componenti ODTE e non ne modificano il risultato.
 
 ---
 
 ## 4. Flussi di comunicazione
 
-### 4.1 Flusso Physical → Digital
+### 4.1 Physical → Digital
 
-Il flusso Physical → Digital descrive il trasferimento dello stato articolare dal robot simulato alla sua rappresentazione digitale.
+Il flusso Physical → Digital trasferisce lo stato articolare dal robot simulato alla rappresentazione digitale.
 
 ```mermaid
 flowchart TD
     A["Robot FR3 simulato"]
     B["/joint_states"]
     C["State Manager"]
-    D["Validazione dei dati"]
-    E["Aggiornamento dello stato interno"]
-    F["/digital_twin/joint_states"]
-    G["Digital Twin"]
-    H["/digital_twin/state_timing"]
+    D["Validazione e aggiornamento"]
+    E["/digital_twin/joint_states"]
+    F["Digital Model"]
+    G["/digital_twin/state_processed"]
+    H["/digital_twin/predicted_joint_states"]
     I["ODTE Monitor"]
 
     A --> B
@@ -261,101 +212,85 @@ flowchart TD
     D --> E
     E --> F
     F --> G
-    C --> H
+    F --> H
+    G --> I
     H --> I
+    B --> I
 ```
 
-Il robot pubblica periodicamente lo stato delle articolazioni attraverso `/joint_states`.
+Il robot pubblica periodicamente il proprio stato articolare attraverso `/joint_states`.
 
-Lo State Manager riceve i messaggi, verifica la validità delle informazioni e aggiorna la rappresentazione digitale interna.
+Lo State Manager verifica i dati ricevuti e pubblica lo stato elaborato su `/digital_twin/joint_states`.
 
-Successivamente pubblica lo stato articolare filtrato su `/digital_twin/joint_states`.
+Il Digital Model utilizza queste informazioni per aggiornare la propria rappresentazione e pubblica gli stati articolari previsti su `/digital_twin/predicted_joint_states`.
 
-Parallelamente, le informazioni temporali vengono inviate all'ODTE Monitor per la valutazione del flusso Physical → Digital.
+Gli eventi di elaborazione vengono pubblicati su `/digital_twin/state_processed` e utilizzati dall'ODTE Monitor per la valutazione temporale del flusso.
 
-### 4.2 Flusso Digital → Physical
+L'ODTE Monitor confronta inoltre gli stati articolari fisici e digitali per diagnosticare eventuali disallineamenti.
 
-Il flusso Digital → Physical descrive l'invio dei comandi dal Digital Twin al robot simulato.
+### 4.2 Digital → Physical
+
+Il flusso Digital → Physical trasferisce i comandi di posizione dal Digital Twin al robot simulato.
 
 ```mermaid
 flowchart TD
     A["Comando desiderato"]
     B["/digital_twin/command_positions"]
     C["Command Manager"]
-    D["Validazione del comando"]
-    E["/fr3_position_controller/commands"]
-    F["FR3 Position Controller"]
-    G["Robot FR3 simulato"]
-    H["/digital_twin/command_status"]
-    I["ODTE Monitor"]
+    D["Validazione"]
+    E["/digital_twin/accepted_command"]
+    F["/fr3_position_controller/commands"]
+    G["FR3 Position Controller"]
+    H["Robot FR3 simulato"]
+    I["/digital_twin/command_status"]
+    J["ODTE Monitor"]
+    K["Digital Model"]
 
     A --> B
     B --> C
     C --> D
     D --> E
-    E --> F
+    D --> F
+    E --> K
     F --> G
-    C --> H
-    H --> I
+    G --> H
+    C --> I
+    I --> J
 ```
 
-Il comando viene ricevuto dal Command Manager, che ne verifica la validità.
+Il Command Manager verifica la validità dei comandi ricevuti.
 
-Se il comando viene accettato, le posizioni desiderate vengono inoltrate al controller del robot.
+Se un comando viene accettato, il nodo pubblica le relative informazioni su `/digital_twin/accepted_command` e inoltra le posizioni desiderate al controller tramite `/fr3_position_controller/commands`.
 
-Il Command Manager monitora successivamente il raggiungimento degli obiettivi e pubblica gli aggiornamenti relativi allo stato del comando.
+Il Digital Model riceve il comando accettato, mentre il Command Manager monitora il raggiungimento delle posizioni obiettivo e pubblica gli aggiornamenti attraverso `/digital_twin/command_status`.
 
-Queste informazioni vengono utilizzate dall'ODTE Monitor per valutare l'affidabilità e la tempestività del flusso Digital → Physical.
+Questi eventi vengono utilizzati dall'ODTE Monitor per valutare il comportamento del flusso Digital → Physical.
 
 ---
 
 ## 5. Monitoraggio della disponibilità
 
-Il Command Manager pubblica periodicamente un heartbeat attraverso il topic `/digital_twin/physical_heartbeat`.
+La disponibilità del sistema viene monitorata attraverso il topic `/digital_twin/physical_heartbeat`, pubblicato periodicamente dal Command Manager.
 
 Il messaggio è di tipo `std_msgs/msg/Bool` e indica se il nodo ha ricevuto recentemente aggiornamenti dello stato articolare del robot.
 
 La frequenza di pubblicazione prevista è pari a 2 Hz.
 
-Il flusso di monitoraggio è rappresentato di seguito:
-
-```mermaid
-flowchart TD
-    A["Robot FR3"]
-    B["/joint_states"]
-    C["Command Manager"]
-    D["Verifica della ricezione recente"]
-    E["Heartbeat"]
-    F["/digital_twin/physical_heartbeat"]
-    G["ODTE Monitor"]
-    H["Calcolo Availability"]
-
-    A --> B
-    B --> C
-    C --> D
-    D --> E
-    E --> F
-    F --> G
-    G --> H
-```
-
-L'ODTE Monitor utilizza gli heartbeat positivi ricevuti all'interno di una finestra temporale per stimare la disponibilità del percorso Digital → Physical.
-
-Gli heartbeat non positivi aggiornano lo stato di disponibilità, mentre le osservazioni positive vengono considerate nel calcolo della componente Availability.
+L'ODTE Monitor utilizza gli heartbeat positivi e non positivi per stimare la componente Availability del flusso Digital → Physical.
 
 ---
 
-## 6. Architettura della metrica ODTE
+## 6. Metrica ODTE
 
-La metrica ODTE (Overall Digital Twin Entanglement) viene utilizzata nel progetto come riferimento per valutare il comportamento dei due flussi di comunicazione.
+La metrica ODTE (Overall Digital Twin Entanglement) viene utilizzata come riferimento sperimentale per valutare il comportamento dei due flussi di comunicazione.
 
-La relazione implementata per il calcolo complessivo è:
+La relazione implementata è:
 
 ```text
 ODTE = T × R × A
 ```
 
-dove:
+Dove:
 
 | Componente | Significato |
 |---|---|
@@ -363,49 +298,40 @@ dove:
 | `R` | Reliability |
 | `A` | Availability |
 
-Tutte le componenti sono rappresentate attraverso valori compresi tra 0 e 1.
+Le componenti sono rappresentate da valori compresi tra 0 e 1.
 
 ### 6.1 Physical → Digital
 
-Per il percorso Physical → Digital:
+Per il flusso Physical → Digital:
 
-- **Timeliness:** valuta se gli aggiornamenti arrivano entro la soglia temporale desiderata.
-- **Reliability:** confronta la frequenza di aggiornamento misurata con quella attesa.
+- **Timeliness:** valuta la proporzione di aggiornamenti elaborati entro la soglia temporale desiderata di 50 ms. Utilizza gli eventi pubblicati su `/digital_twin/state_processed`.
+- **Reliability:** confronta la frequenza di aggiornamento misurata con quella attesa, pari a 100 Hz.
 - **Availability:** nella versione attuale viene impostata a 1.
-
-Le informazioni utilizzate per questo calcolo provengono dal topic `/digital_twin/state_timing`.
 
 ### 6.2 Digital → Physical
 
-Per il percorso Digital → Physical:
+Per il flusso Digital → Physical:
 
 - **Timeliness:** considera la proporzione di comandi accettati e completati entro la soglia temporale prevista.
 - **Reliability:** considera la proporzione di comandi completati con successo rispetto a quelli accettati.
-- **Availability:** viene stimata attraverso gli heartbeat positivi ricevuti nella finestra temporale di osservazione.
+- **Availability:** viene stimata attraverso gli heartbeat ricevuti nella finestra temporale di osservazione.
 
 I comandi rifiutati non vengono conteggiati tra quelli accettati.
-
-In assenza di comandi accettati, Timeliness e Reliability vengono impostate a zero. Il monitor continua comunque a pubblicare i risultati.
 
 ### 6.3 Pubblicazione dei risultati
 
 L'ODTE Monitor pubblica i risultati attraverso `/digital_twin/odte`, utilizzando messaggi `std_msgs/msg/String` contenenti dati JSON.
 
-La struttura dei messaggi distingue le due direzioni attraverso il campo `direction`.
+Le due direzioni vengono valutate separatamente e producono due messaggi distinti, identificati dal campo `direction`:
 
-Esempio:
+- `physical_to_digital`
+- `digital_to_physical`
 
-```json
-{
-  "direction": "digital_to_physical",
-  "timeliness": 1.0,
-  "reliability": 1.0,
-  "availability": 1.0,
-  "odte": 1.0
-}
-```
+Ogni messaggio contiene le componenti Timeliness, Reliability e Availability e il relativo valore ODTE.
 
-**Nota:** l'implementazione ODTE costituisce un prototipo sperimentale. I valori prodotti descrivono il comportamento delle componenti attualmente implementate e non rappresentano ancora una misura scientificamente validata della qualità del Digital Twin.
+I risultati vengono pubblicati sullo stesso topic, ma rappresentano due valutazioni indipendenti dei flussi di comunicazione.
+
+**Nota:** l'implementazione costituisce un prototipo sperimentale e richiede ulteriori verifiche teoriche e sperimentali per la validazione delle componenti.
 
 ---
 
@@ -415,9 +341,12 @@ La comunicazione tra i componenti avviene attraverso i seguenti topic:
 
 | Topic | Tipo di messaggio | Publisher | Subscriber |
 |---|---|---|---|
-| `/joint_states` | `sensor_msgs/msg/JointState` | Robot / controller | State Manager, Synchronization Monitor, Command Manager |
-| `/digital_twin/joint_states` | `sensor_msgs/msg/JointState` | State Manager | Componenti di verifica dello stato |
-| `/digital_twin/state_timing` | `std_msgs/msg/String` | State Manager | ODTE Monitor |
+| `/joint_states` | `sensor_msgs/msg/JointState` | Robot / controller | State Manager, Command Manager, ODTE Monitor |
+| `/digital_twin/joint_states` | `sensor_msgs/msg/JointState` | State Manager | Digital Model, Tracking Test, Full Sequence Test |
+| `/digital_twin/state_timing` | `std_msgs/msg/String` | State Manager | — |
+| `/digital_twin/accepted_command` | `std_msgs/msg/String` | Command Manager | Digital Model |
+| `/digital_twin/state_processed` | `std_msgs/msg/String` | Digital Model | ODTE Monitor |
+| `/digital_twin/predicted_joint_states` | `sensor_msgs/msg/JointState` | Digital Model | ODTE Monitor |
 | `/digital_twin/command_positions` | `std_msgs/msg/Float64MultiArray` | Interfaccia di comando | Command Manager |
 | `/fr3_position_controller/commands` | `std_msgs/msg/Float64MultiArray` | Command Manager | FR3 Position Controller |
 | `/digital_twin/command_status` | `std_msgs/msg/String` | Command Manager | ODTE Monitor |
@@ -428,34 +357,29 @@ La comunicazione tra i componenti avviene attraverso i seguenti topic:
 
 ## 8. Organizzazione dei moduli
 
-Il package `franka_dt` separa le responsabilità del sistema in moduli distinti.
+Il package `franka_dt` è organizzato in moduli con responsabilità distinte:
 
 | Modulo | Responsabilità |
 |---|---|
 | `state_manager.py` | Acquisizione, validazione e pubblicazione dello stato articolare |
 | `command_manager.py` | Validazione, invio e monitoraggio dei comandi |
-| `synchronization_monitor.py` | Monitoraggio della freschezza degli aggiornamenti |
+| `digital_model.py` | Aggiornamento della rappresentazione digitale e pubblicazione degli stati previsti e degli eventi di elaborazione |
 | `odte_metrics.py` | Funzioni matematiche per il calcolo delle componenti ODTE |
-| `odte_monitor.py` | Raccolta delle informazioni e pubblicazione delle metriche ODTE |
+| `odte_monitor.py` | Calcolo ODTE e diagnostica della sincronizzazione |
 | `tracking_test.py` | Verifica del raggiungimento di posizioni articolari selezionate |
-| `full_sequence_test.py` | Verifica di una sequenza di movimenti sulle sette articolazioni |
+| `full_sequence_test.py` | Verifica di sequenze di movimento sulle sette articolazioni |
 
-I test automatici sono organizzati separatamente nella cartella `test/` e verificano il comportamento dei principali moduli del package.
+I test automatici sono organizzati separatamente nella cartella `test/`.
 
 ---
 
 ## 9. Considerazioni progettuali
 
-L'architettura è stata progettata secondo alcuni principi fondamentali:
+L'architettura si basa sui seguenti principi:
 
-- **Modularità:** ogni nodo ROS 2 gestisce una responsabilità specifica.
+- **Modularità:** ogni nodo gestisce una responsabilità specifica.
 - **Separazione dei flussi:** acquisizione dello stato e invio dei comandi sono gestiti da componenti distinti.
-- **Validazione dei dati:** i messaggi vengono controllati prima di essere utilizzati dai componenti successivi.
-- **Monitoraggio:** le informazioni temporali, gli eventi relativi ai comandi e gli heartbeat consentono di osservare il comportamento dei flussi.
-- **Estendibilità:** i moduli possono essere modificati o ampliati senza dover riprogettare l'intera architettura.
-- **Configurabilità:** il parametro `position_tolerance` può essere modificato dinamicamente durante l'esecuzione del Command Manager, consentendo di adattare la precisione richiesta.
-- **Validazione sperimentale:** differenti valori di tolleranza sono stati confrontati attraverso prove ripetute, analizzando i tempi di completamento e la loro variabilità.
-
-La separazione tra i flussi Physical → Digital e Digital → Physical permette inoltre di analizzare separatamente i due percorsi e di individuare eventuali criticità nella comunicazione tra robot e Digital Twin.
-
-Il sistema costituisce una base sperimentale per lo sviluppo e la valutazione di un Digital Twin del Franka FR3. Le prove sulla tolleranza di posizione hanno permesso di individuare un possibile compromesso tra rapidità di completamento e precisione del posizionamento. Il monitoraggio ODTE potrà invece essere ulteriormente raffinato attraverso verifiche teoriche e sperimentali delle singole componenti.
+- **Validazione:** i dati vengono controllati prima di essere utilizzati dai componenti successivi.
+- **Monitoraggio:** le informazioni temporali, gli eventi relativi ai comandi e gli heartbeat permettono di osservare il comportamento dei due flussi.
+- **Estendibilità:** i moduli possono essere modificati o ampliati senza riprogettare l'intero sistema.
+- **Verifica sperimentale:** il comportamento del sistema viene analizzato attraverso test di tracking, sequenze di movimento e valutazione delle componenti ODTE.

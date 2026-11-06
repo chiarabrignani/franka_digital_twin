@@ -1,3 +1,5 @@
+import os
+from glob import glob
 from setuptools import find_packages, setup
 
 package_name = 'franka_dt'
@@ -15,6 +17,10 @@ setup(
             'share/' + package_name,
             ['package.xml']
         ),
+        (
+            os.path.join('share', package_name, 'launch'),
+            glob('launch/*.launch.py')
+        ),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -31,11 +37,10 @@ setup(
         'console_scripts': [
             'state_manager = franka_dt.state_manager:main',
             'command_manager = franka_dt.command_manager:main',
-            'synchronization_monitor = '
-            'franka_dt.synchronization_monitor:main',
             'tracking_test = franka_dt.tracking_test:main',
             'full_sequence_test = franka_dt.full_sequence_test:main',
             'odte_monitor = franka_dt.odte_monitor:main',
+            'digital_model = franka_dt.digital_model:main',
         ],
     },
 )

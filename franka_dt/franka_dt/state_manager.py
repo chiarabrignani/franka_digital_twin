@@ -66,7 +66,6 @@ class StateManager(Node):
     def joint_state_callback(self, msg):
         # Misura l'inizio dell'elaborazione.
         callback_start = time.monotonic()
-        reception_ros = self.get_clock().now().nanoseconds / 1e9
 
         # Verifica che nomi e posizioni siano coerenti.
         if len(msg.name) != len(msg.position):
@@ -129,6 +128,8 @@ class StateManager(Node):
             digital_msg.effort = [
                 float(efforts[joint]) for joint in self.joint_names
             ]
+
+        reception_ros = self.get_clock().now().nanoseconds / 1e9
 
         # Pubblica lo stato digitale.
         self.state_publisher.publish(digital_msg)
