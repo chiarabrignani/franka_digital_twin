@@ -203,12 +203,18 @@ class DigitalModel(Node):
             + msg.header.stamp.nanosec * 1e-9
         )
 
+        source_timestamp_ns = (
+            msg.header.stamp.sec * 1_000_000_000
+            + msg.header.stamp.nanosec
+        )
+
         # Pubblica l'evento solo quando entrambi i timestamp sono validi.
         if receipt_ros > 0 and source_timestamp > 0:
 
             event = {
                 'update_id': self.physical_state_count,
                 'source_timestamp': source_timestamp,
+                'source_timestamp_ns': source_timestamp_ns,
                 'receipt_ros_timestamp': receipt_ros,
                 'receipt_monotonic': receipt_time,
                 'processed_monotonic': processed_time,

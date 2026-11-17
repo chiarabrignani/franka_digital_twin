@@ -1,0 +1,6 @@
+string mode
+uint8 step_index
+---
+bool success
+string message
+DigitalTwinCommand command

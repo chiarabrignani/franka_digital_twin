@@ -48,4 +48,12 @@ def generate_launch_description():
             parameters=[{'use_sim_time': use_sim_time}]
         ),
 
+        Node(
+            package='franka_dt',
+            executable='dt_visualization_bridge',
+            name='dt_visualization_bridge',
+            output='screen',
+            parameters=[{'use_sim_time': use_sim_time}]
+        ),
+
     ])

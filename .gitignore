@@ -13,3 +13,16 @@ __pycache__/
 
 # Risultati dei test sperimentali
 results/
+
+# Build directories personalizzate
+build_clean/
+install_clean/
+log_clean/
+
+# File temporanei generati durante gli esperimenti
+*.gv
+
+# Backup temporanei
+*.pre_*
+*.bak
+*.test_backup

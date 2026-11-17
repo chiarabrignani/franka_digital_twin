@@ -21,6 +21,25 @@ setup(
             os.path.join('share', package_name, 'launch'),
             glob('launch/*.launch.py')
         ),
+        (
+            os.path.join('share', package_name, 'rviz'),
+            glob('rviz/*.rviz')
+        ),
+        # Mesh personalizzate del Digital Twin
+        (
+            os.path.join(
+                'share', package_name, 'meshes',
+                'robots', 'fr3', 'visual'
+            ),
+            glob('meshes/dt/robots/fr3/visual/*.dae')
+        ),
+        (
+            os.path.join(
+                'share', package_name, 'meshes',
+                'robot_ee', 'franka_hand_white', 'visual'
+            ),
+            glob('meshes/dt/robot_ee/franka_hand_white/visual/*.dae')
+        ),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -41,6 +60,8 @@ setup(
             'full_sequence_test = franka_dt.full_sequence_test:main',
             'odte_monitor = franka_dt.odte_monitor:main',
             'digital_model = franka_dt.digital_model:main',
+            'digital_command_generator = franka_dt.digital_command_generator:main',
+            'dt_visualization_bridge = franka_dt.dt_visualization_bridge:main',
         ],
     },
 )

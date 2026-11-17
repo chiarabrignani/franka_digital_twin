@@ -114,6 +114,7 @@ class ODTEMonitor(Node):
         # Ogni osservazione contiene:
         # (tempo monotono di ricezione, timeliness in secondi).
         self.observations = deque()
+        self.ptdt_observations = deque()
         self.first_observation_time = None
 
         # Stato e tempi di ricezione degli heartbeat del lato fisico.
@@ -221,18 +222,92 @@ class ODTEMonitor(Node):
             )
             return
 
-        if status == 'executing':
-            # Registra il comando una sola volta, al momento
-            # della prima ricezione dello stato executing.
-            if command_id not in self.accepted_commands:
-                self.accepted_commands[command_id] = {
-                    'accepted_at': reception_time,
-                }
+        if status == 'submitted':
+            # L'invio del goal non equivale all'accettazione del controller.
+            return
 
-                # La coda contiene i tempi di accettazione,
-                # non quelli degli esiti finali.
-                self.command_observations.append(
-                    (reception_time, command_id)
+        if status == 'goal_accepted':
+            if command_id in self.accepted_commands:
+                return
+
+            try:
+                emission_timestamp = float(data['emission_timestamp'])
+                physical_receipt_ns = int(
+                    data['physical_goal_receipt_timestamp_ns']
+                )
+            except (KeyError, TypeError, ValueError):
+                self.get_logger().warning(
+                    'Evento goal_accepted privo dei timestamp necessari.'
+                )
+                return
+
+            physical_receipt_timestamp = physical_receipt_ns / 1e9
+
+            if (
+                not math.isfinite(emission_timestamp)
+                or emission_timestamp <= 0
+                or physical_receipt_ns <= 0
+                or physical_receipt_timestamp < emission_timestamp
+            ):
+                self.get_logger().warning(
+                    f'Timestamp non validi per il comando {command_id}.'
+                )
+                return
+
+            # Associa l'ultima osservazione PT->DT già disponibile
+            # prima dell'emissione del comando. È una regola esplicita
+            # di associazione temporale, non un abbinamento per geometria.
+            prior_observations = [
+                observation
+                for observation in self.ptdt_observations
+                if observation['reception_ros'] <= emission_timestamp
+            ]
+
+            ptdt_observation = (
+                max(
+                    prior_observations,
+                    key=lambda observation: observation['reception_ros']
+                )
+                if prior_observations else None
+            )
+
+            equation7_value = None
+            ptdt_update_id = None
+            ptdt_latency = None
+
+            if ptdt_observation is not None:
+                ptdt_latency = ptdt_observation['timeliness']
+                ptdt_update_id = ptdt_observation['update_id']
+                equation7_value = (
+                    physical_receipt_timestamp
+                    - emission_timestamp
+                    + ptdt_latency
+                )
+
+            self.accepted_commands[command_id] = {
+                'accepted_at': reception_time,
+                'emission_timestamp': emission_timestamp,
+                'physical_receipt_timestamp': physical_receipt_timestamp,
+                'ptdt_latency': ptdt_latency,
+                'ptdt_update_id': ptdt_update_id,
+                'equation7_observation_seconds': equation7_value,
+            }
+
+            self.command_observations.append(
+                (reception_time, command_id)
+            )
+
+            if equation7_value is None:
+                self.get_logger().warning(
+                    f'Comando {command_id}: nessuna osservazione PT-DT '
+                    'precedente all’emissione; il valore Eq. 7 non è '
+                    'disponibile per questo comando.'
+                )
+            else:
+                self.get_logger().info(
+                    f'Comando {command_id}: osservazione Eq. 7 = '
+                    f'{equation7_value * 1000:.3f} ms '
+                    f'(update_id PT-DT={ptdt_update_id}).'
                 )
 
             return
@@ -466,6 +541,13 @@ class ODTEMonitor(Node):
             (reception_monotonic, timeliness)
         )
 
+        self.ptdt_observations.append({
+            'receipt_monotonic': reception_monotonic,
+            'reception_ros': reception_ros,
+            'timeliness': timeliness,
+            'update_id': update_id,
+        })
+
         if self.first_observation_time is None:
             self.first_observation_time = reception_monotonic
 
@@ -478,6 +560,13 @@ class ODTEMonitor(Node):
             and now - self.observations[0][0] > self.window
         ):
             self.observations.popleft()
+
+        while (
+            self.ptdt_observations
+            and now - self.ptdt_observations[0]['receipt_monotonic']
+            > self.window
+        ):
+            self.ptdt_observations.popleft()
 
     def remove_old_command_observations(self, now):
         """Remove accepted commands older than the time window."""
@@ -722,37 +811,36 @@ class ODTEMonitor(Node):
         """Calculate Digital -> Physical ODTE metrics."""
         self.remove_old_command_observations(now)
 
-        # Considera i comandi accettati ancora presenti nella finestra.
+        # Considera i comandi realmente accettati dal controller PT.
         accepted_count = len(self.accepted_commands)
 
-        # Seleziona gli esiti dei comandi ancora presenti nella finestra.
+        # Gli esiti finali servono alla Reliability, non alla Timeliness
+        # dell'Equazione 7.
         results = [
             result
             for command_id, result in self.command_results.items()
             if command_id in self.accepted_commands
         ]
 
-        # Timeliness e Reliability.
         if accepted_count == 0:
             timeliness = 0.0
             reliability = 0.0
             successful_commands = 0
-
         else:
-            # Timeliness: percentuale di comandi completati entro soglia.
+            # Eq. 7: t_PT' - t_DT' + o_PT->DT associata
+            # all'ultima osservazione PT-DT precedente all'emissione.
             timely_commands = sum(
                 1
-                for result in results
+                for command in self.accepted_commands.values()
                 if (
-                    result['status'] == 'completed'
-                    and result['elapsed_seconds']
+                    command['equation7_observation_seconds'] is not None
+                    and 0 <= command['equation7_observation_seconds']
                     <= self.command_timeliness
                 )
             )
 
             timeliness = timely_commands / accepted_count
 
-            # Reliability: comandi completati con successo / accettati.
             successful_commands = sum(
                 1
                 for result in results
@@ -776,11 +864,38 @@ class ODTEMonitor(Node):
             'odte': round(odte, 4),
             'accepted_commands': accepted_count,
             'completed_commands': successful_commands,
+            'commands_with_equation7_observation': sum(
+                1
+                for command in self.accepted_commands.values()
+                if command['equation7_observation_seconds'] is not None
+            ),
+            'mean_equation7_observation_ms': (
+                round(
+                    1000.0 * sum(
+                        command['equation7_observation_seconds']
+                        for command in self.accepted_commands.values()
+                        if command['equation7_observation_seconds'] is not None
+                    ) / max(
+                        1,
+                        sum(
+                            1
+                            for command in self.accepted_commands.values()
+                            if command['equation7_observation_seconds'] is not None
+                        )
+                    ),
+                    3,
+                )
+                if any(
+                    command['equation7_observation_seconds'] is not None
+                    for command in self.accepted_commands.values()
+                )
+                else None
+            ),
             'command_timeliness_ms':
                 self.command_timeliness * 1000,
             'window_seconds': self.window,
             'timeliness_method':
-                'command_execution_duration_proxy',
+                'equation_7_with_latest_pre_emission_ptdt_observation',
             'availability_method':
                 'available_time_fraction_from_heartbeat_and_timeout',
         }
