@@ -602,6 +602,7 @@ class CommandManager(Node):
             for joint in self.joint_names
         }
 
+        # Aggiorna il timestamp dell'ultimo stato ricevuto
         self.last_joint_state_time = time.monotonic()
 
         # Se non c'è un comando attivo, non c'è nulla da verificare
@@ -963,6 +964,9 @@ class CommandManager(Node):
             self.active_command[joint]
             for joint in self.joint_names
         ]
+
+        # Imposta le velocità finali a zero
+        trajectory_point.velocities = [0.0] * len(self.joint_names)
 
         # Imposta il tempo entro cui raggiungere il target
         trajectory_point.time_from_start.sec = int(
