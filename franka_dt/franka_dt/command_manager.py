@@ -1,33 +1,38 @@
-import uuid
-
-from rclpy.action import ActionClient
-
-from control_msgs.action import FollowJointTrajectory
-from trajectory_msgs.msg import JointTrajectoryPoint
-from unique_identifier_msgs.msg import UUID
-from action_msgs.msg import GoalStatus
+"""Manage physical robot commands and their Digital Twin synchronization."""
 
 import json
 import math
 import time
+import uuid
+
+from action_msgs.msg import GoalStatus
+
+from control_msgs.action import FollowJointTrajectory
+
+from franka_dt_interfaces.msg import DigitalTwinCommand
 
 from rcl_interfaces.msg import SetParametersResult
 
 import rclpy
+from rclpy.action import ActionClient
+from rclpy.clock import Clock
+from rclpy.clock_type import ClockType
 from rclpy.node import Node
 
 from sensor_msgs.msg import JointState
 
 from std_msgs.msg import Bool, Float64MultiArray, String
-from franka_dt_interfaces.msg import DigitalTwinCommand
 
-from rclpy.clock import Clock
-from rclpy.clock_type import ClockType
+from trajectory_msgs.msg import JointTrajectoryPoint
+
+from unique_identifier_msgs.msg import UUID
 
 
 class CommandManager(Node):
+    """Manage commands sent to the physical robot and Digital Twin."""
 
     def __init__(self):
+        """Initialize the Command Manager node and its parameters."""
         super().__init__('command_manager')
 
         # Nomi dei sette giunti del braccio FR3
@@ -72,24 +77,40 @@ class CommandManager(Node):
             self.parameters_callback
         )
 
-        if not math.isfinite(self.position_tolerance) or self.position_tolerance <= 0:
+        if (
+            not math.isfinite(self.position_tolerance)
+            or self.position_tolerance <= 0
+        ):
             raise ValueError(
-                'position_tolerance deve essere un numero finito e maggiore di zero'
+                'position_tolerance deve essere finito '
+                'e maggiore di zero'
             )
 
-        if not math.isfinite(self.stable_duration) or self.stable_duration <= 0:
+        if (
+            not math.isfinite(self.stable_duration)
+            or self.stable_duration <= 0
+        ):
             raise ValueError(
-                'stable_duration deve essere un numero finito e maggiore di zero'
+                'stable_duration deve essere finito '
+                'e maggiore di zero'
             )
 
-        if not math.isfinite(self.command_timeout) or self.command_timeout <= 0:
+        if (
+            not math.isfinite(self.command_timeout)
+            or self.command_timeout <= 0
+        ):
             raise ValueError(
-                'command_timeout deve essere un numero finito e maggiore di zero'
+                'command_timeout deve essere finito '
+                'e maggiore di zero'
             )
 
-        if not math.isfinite(self.max_state_interval) or self.max_state_interval <= 0:
+        if (
+            not math.isfinite(self.max_state_interval)
+            or self.max_state_interval <= 0
+        ):
             raise ValueError(
-                'max_state_interval deve essere un numero finito e maggiore di zero'
+                'max_state_interval deve essere finito '
+                'e maggiore di zero'
             )
 
         if (
@@ -104,7 +125,8 @@ class CommandManager(Node):
         self.active_command = None
         self.active_command_id = None
 
-        # Identificativo del goal Action associato al comando attivo
+        # Identificativo del goal Action
+        # associato al comando attivo
         self.active_goal_uuid = None
         self.active_goal_uuid_hex = None
 
@@ -118,7 +140,8 @@ class CommandManager(Node):
         self.accepted_command_published = False
 
         # Timestamp di ricezione dei goal da parte del controller fisico.
-        # La chiave è il command_id, il valore è il timestamp ROS in nanosecondi.
+        # La chiave è il command_id, il valore è il timestamp ROS
+        # in nanosecondi.
         self.physical_goal_receipts = {}
 
         # Indica se il comando ha superato il timeout.
@@ -217,6 +240,7 @@ class CommandManager(Node):
         )
 
     def parameters_callback(self, params):
+        """Validate and update the node's parameters."""
         for param in params:
 
             if param.name == 'position_tolerance':
@@ -226,13 +250,17 @@ class CommandManager(Node):
                 if not math.isfinite(value) or value <= 0:
                     return SetParametersResult(
                         successful=False,
-                        reason='position_tolerance deve essere finito e maggiore di zero'
+                        reason=(
+                            'position_tolerance deve essere finito '
+                            'e maggiore di zero'
+                        )
                     )
 
                 self.position_tolerance = value
 
                 self.get_logger().info(
-                    f'Nuova tolleranza impostata: {self.position_tolerance:.6f} rad'
+                    f'Nuova tolleranza impostata: '
+                    f'{self.position_tolerance:.6f} rad'
                 )
 
         return SetParametersResult(successful=True)
@@ -258,7 +286,6 @@ class CommandManager(Node):
         physical_goal_receipt_timestamp_ns=None
     ):
         """Pubblica lo stato del comando in formato JSON."""
-
         message = String()
 
         now_ros = self.get_clock().now().nanoseconds / 1e9
@@ -298,6 +325,7 @@ class CommandManager(Node):
         self.status_publisher.publish(message)
 
     def log_final_errors(self):
+        """Log the final position errors for all robot joints."""
         if not all(
             joint in self.current_positions
             for joint in self.joint_names
@@ -378,6 +406,19 @@ class CommandManager(Node):
                 f'Comando fallito: {reason}.'
             )
 
+        # Rimuove le associazioni del comando terminato
+        completed_goal_uuid = self.active_goal_uuid_hex
+        completed_command_id = self.active_command_id
+
+        if completed_goal_uuid is not None:
+            self.goal_command_map.pop(completed_goal_uuid, None)
+
+        if completed_command_id is not None:
+            self.physical_goal_receipts.pop(
+                completed_command_id,
+                None
+            )
+
         # Libera lo stato per consentire un nuovo comando
         self.active_command = None
         self.active_command_id = None
@@ -398,7 +439,6 @@ class CommandManager(Node):
 
     def check_command_timeout(self):
         """Controlla il timeout e richiede la cancellazione del goal."""
-
         if self.active_command is None:
             return
 
@@ -449,13 +489,14 @@ class CommandManager(Node):
                 # La cancellazione verrà richiesta nella callback
                 # quando riceveremo la risposta del controller.
                 self.get_logger().warning(
-                    'Goal non ancora accettato o risposta non ancora ricevuta. '
-                    'La cancellazione verrà gestita alla ricezione della risposta.'
+                    'Goal non ancora accettato o risposta '
+                    'non ancora ricevuta. '
+                    'La cancellazione verrà gestita '
+                    'alla ricezione della risposta.'
                 )
 
     def cancel_response_callback(self, future, goal_uuid):
-        """Gestisce la risposta del controller alla richiesta di cancellazione."""
-
+        """Gestisce la risposta del controller alla cancellazione."""
         # Ignora eventuali risposte relative a comandi già conclusi.
         if goal_uuid != self.active_goal_uuid_hex:
             return
@@ -481,7 +522,6 @@ class CommandManager(Node):
 
     def physical_goal_received_callback(self, msg):
         """Riceve e associa il timestamp di ricezione del goal fisico."""
-
         try:
             # Decodifica il messaggio JSON.
             event = json.loads(msg.data)
@@ -529,7 +569,8 @@ class CommandManager(Node):
 
         except (KeyError, ValueError, TypeError, json.JSONDecodeError) as e:
             self.get_logger().error(
-                f'Errore nella decodifica dell evento physical_goal_received: {e}'
+                f'Errore nella decodifica dell evento '
+                f'physical_goal_received: {e}'
             )
 
     def publish_accepted_command_if_ready(self):
@@ -659,7 +700,8 @@ class CommandManager(Node):
 
                         self.get_logger().info(
                             'Target raggiunto e mantenuto entro la tolleranza '
-                            'per la durata richiesta. In attesa del risultato Action.'
+                            'per la durata richiesta. '
+                            'In attesa del risultato Action.'
                         )
 
                         self.target_stable_logged = True
@@ -673,7 +715,6 @@ class CommandManager(Node):
 
     def goal_response_callback(self, future, goal_uuid):
         """Gestisce la risposta del controller alla richiesta di goal."""
-
         # Ignora eventuali risposte relative a comandi già conclusi.
         if goal_uuid != self.active_goal_uuid_hex:
             return
@@ -757,7 +798,6 @@ class CommandManager(Node):
 
     def action_result_callback(self, future, goal_uuid):
         """Gestisce il risultato finale restituito dal controller."""
-
         # Ignora risultati tardivi di comandi già conclusi.
         if goal_uuid != self.active_goal_uuid_hex:
             return
@@ -821,7 +861,6 @@ class CommandManager(Node):
 
     def command_callback(self, msg):
         """Valida e inoltra un comando articolare al controller."""
-
         command_id = msg.command_id
         stamp = msg.emission_timestamp
 
@@ -1050,7 +1089,7 @@ class CommandManager(Node):
 
 
 def main(args=None):
-
+    """Initialize ROS and spin the Command Manager node."""
     rclpy.init(args=args)
 
     node = CommandManager()
