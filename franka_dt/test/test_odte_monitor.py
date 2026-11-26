@@ -30,13 +30,20 @@ def test_rejected_command_is_not_counted():
     monitor.command_observations.append.assert_not_called()
 
 
-def test_executing_command_is_registered_only_once(monkeypatch):
-    """Register an accepted command only once."""
+def test_goal_accepted_command_is_registered_only_once(monkeypatch):
+    """Register a goal-accepted command only once."""
     monitor = ODTEMonitor.__new__(ODTEMonitor)
 
     monitor.accepted_commands = {}
     monitor.command_results = {}
     monitor.command_observations = []
+    monitor.ptdt_observations = [
+        {
+            'reception_ros': 199.9,
+            'timeliness': 0.05,
+            'update_id': 'update-001',
+        }
+    ]
     monitor.get_logger = Mock()
 
     reception_time = 100.0
@@ -47,8 +54,10 @@ def test_executing_command_is_registered_only_once(monkeypatch):
 
     message = String()
     message.data = json.dumps({
-        'status': 'executing',
+        'status': 'goal_accepted',
         'command_id': 'command-001',
+        'emission_timestamp': 200.0,
+        'physical_goal_receipt_timestamp_ns': 200_200_000_000,
     })
 
     monitor.command_status_callback(message)
@@ -57,6 +66,14 @@ def test_executing_command_is_registered_only_once(monkeypatch):
     assert len(monitor.accepted_commands) == 1
     assert 'command-001' in monitor.accepted_commands
     assert len(monitor.command_observations) == 1
+
+    command = monitor.accepted_commands['command-001']
+
+    assert command['emission_timestamp'] == 200.0
+    assert command['physical_receipt_timestamp'] == 200.2
+    assert command['ptdt_latency'] == 0.05
+    assert command['ptdt_update_id'] == 'update-001'
+    assert abs(command['equation7_observation_seconds'] - 0.25) < 1e-9
 
 
 def test_final_status_is_associated_with_command_id(monkeypatch):
@@ -176,15 +193,30 @@ def test_digital_to_physical_metrics():
     monitor.window = 10.0
     monitor.command_timeliness = 10.0
     monitor.heartbeat_timeout = 1.5
-    monitor.expected_heartbeat_rate = 2.0
     monitor.start_time = 100.0
-    monitor.heartbeat_observations = deque([108.0, 109.0])
+
+    monitor.heartbeat_observations = deque([
+        (108.0, True),
+        (109.0, True),
+    ])
 
     monitor.accepted_commands = {
-        'command-001': {'accepted_at': 100.0},
-        'command-002': {'accepted_at': 101.0},
-        'command-003': {'accepted_at': 102.0},
-        'command-004': {'accepted_at': 103.0},
+        'command-001': {
+            'accepted_at': 100.0,
+            'equation7_observation_seconds': 2.0,
+        },
+        'command-002': {
+            'accepted_at': 101.0,
+            'equation7_observation_seconds': 12.0,
+        },
+        'command-003': {
+            'accepted_at': 102.0,
+            'equation7_observation_seconds': 3.0,
+        },
+        'command-004': {
+            'accepted_at': 103.0,
+            'equation7_observation_seconds': None,
+        },
     }
 
     monitor.command_observations = deque([
@@ -226,10 +258,10 @@ def test_digital_to_physical_metrics():
     assert metrics['direction'] == 'digital_to_physical'
     assert metrics['accepted_commands'] == 4
     assert metrics['completed_commands'] == 2
-    assert metrics['timeliness'] == 0.25
+    assert metrics['timeliness'] == 0.5
     assert metrics['reliability'] == 0.5
-    assert metrics['availability'] == 0.1
-    assert metrics['odte'] == 0.0125
+    assert metrics['availability'] == 0.2
+    assert metrics['odte'] == 0.05
 
 
 def test_digital_to_physical_odte_is_zero_with_stale_heartbeat():
@@ -244,7 +276,10 @@ def test_digital_to_physical_odte_is_zero_with_stale_heartbeat():
     monitor.heartbeat_observations = deque()
 
     monitor.accepted_commands = {
-        'command-001': {'accepted_at': 100.0},
+        'command-001': {
+            'accepted_at': 100.0,
+            'equation7_observation_seconds': 2.0,
+        },
     }
 
     monitor.command_observations = deque([
@@ -279,17 +314,31 @@ def test_digital_to_physical_odte_is_zero_with_stale_heartbeat():
 
 
 def test_availability_below_expected_heartbeat_rate():
-    """Availability is proportional to a lower heartbeat rate."""
+    """Availability reflects heartbeat coverage over the time window."""
     monitor = ODTEMonitor.__new__(ODTEMonitor)
+
     monitor.window = 10.0
     monitor.command_timeliness = 10.0
-    monitor.expected_heartbeat_rate = 2.0
+    monitor.heartbeat_timeout = 1.5
     monitor.start_time = 100.0
-    monitor.heartbeat_observations = deque([102.0, 104.0, 106.0])
+
+    monitor.heartbeat_observations = deque([
+        (102.0, True),
+        (104.0, True),
+        (106.0, True),
+    ])
+
     monitor.accepted_commands = {
-        'command-001': {'accepted_at': 100.0},
+        'command-001': {
+            'accepted_at': 100.0,
+            'equation7_observation_seconds': 2.0,
+        },
     }
-    monitor.command_observations = deque([(100.0, 'command-001')])
+
+    monitor.command_observations = deque([
+        (100.0, 'command-001'),
+    ])
+
     monitor.command_results = {
         'command-001': {
             'status': 'completed',
@@ -297,6 +346,7 @@ def test_availability_below_expected_heartbeat_rate():
             'received_at': 101.0,
         },
     }
+
     monitor.publisher = Mock()
     monitor.get_logger = Mock()
 
@@ -305,24 +355,43 @@ def test_availability_below_expected_heartbeat_rate():
     metrics = json.loads(
         monitor.publisher.publish.call_args.args[0].data
     )
-    assert metrics['availability'] == 0.15
+
+    assert metrics['availability'] == 0.45
 
 
 def test_availability_below_expected_heartbeat_rate_1hz():
-    """Availability is 0.5 when the measured rate is 1 Hz."""
+    """Availability reflects heartbeat coverage over the time window."""
     monitor = ODTEMonitor.__new__(ODTEMonitor)
+
     monitor.window = 10.0
     monitor.command_timeliness = 10.0
-    monitor.expected_heartbeat_rate = 2.0
+    monitor.heartbeat_timeout = 1.5
     monitor.start_time = 100.0
-    monitor.heartbeat_observations = deque(
-        [101.0, 102.0, 103.0, 104.0, 105.0,
-         106.0, 107.0, 108.0, 109.0, 110.0]
-    )
+
+    monitor.heartbeat_observations = deque([
+        (101.0, True),
+        (102.0, True),
+        (103.0, True),
+        (104.0, True),
+        (105.0, True),
+        (106.0, True),
+        (107.0, True),
+        (108.0, True),
+        (109.0, True),
+        (110.0, True),
+    ])
+
     monitor.accepted_commands = {
-        'command-001': {'accepted_at': 100.0},
+        'command-001': {
+            'accepted_at': 100.0,
+            'equation7_observation_seconds': 2.0,
+        },
     }
-    monitor.command_observations = deque([(100.0, 'command-001')])
+
+    monitor.command_observations = deque([
+        (100.0, 'command-001'),
+    ])
+
     monitor.command_results = {
         'command-001': {
             'status': 'completed',
@@ -330,6 +399,7 @@ def test_availability_below_expected_heartbeat_rate_1hz():
             'received_at': 101.0,
         },
     }
+
     monitor.publisher = Mock()
     monitor.get_logger = Mock()
 
@@ -338,23 +408,35 @@ def test_availability_below_expected_heartbeat_rate_1hz():
     metrics = json.loads(
         monitor.publisher.publish.call_args.args[0].data
     )
-    assert metrics['availability'] == 0.5
+
+    assert metrics['availability'] == 0.9
 
 
 def test_availability_is_capped_at_one():
     """Availability never exceeds one."""
     monitor = ODTEMonitor.__new__(ODTEMonitor)
+
     monitor.window = 10.0
     monitor.command_timeliness = 10.0
-    monitor.expected_heartbeat_rate = 2.0
+    monitor.heartbeat_timeout = 1.5
     monitor.start_time = 100.0
-    monitor.heartbeat_observations = deque(
-        [100.4 + 0.4 * i for i in range(25)]
-    )
+
+    monitor.heartbeat_observations = deque([
+        (99.6 + 0.4 * i, True)
+        for i in range(25)
+    ])
+
     monitor.accepted_commands = {
-        'command-001': {'accepted_at': 100.0},
+        'command-001': {
+            'accepted_at': 100.0,
+            'equation7_observation_seconds': 2.0,
+        },
     }
-    monitor.command_observations = deque([(100.0, 'command-001')])
+
+    monitor.command_observations = deque([
+        (100.0, 'command-001'),
+    ])
+
     monitor.command_results = {
         'command-001': {
             'status': 'completed',
@@ -362,6 +444,7 @@ def test_availability_is_capped_at_one():
             'received_at': 101.0,
         },
     }
+
     monitor.publisher = Mock()
     monitor.get_logger = Mock()
 
@@ -370,6 +453,7 @@ def test_availability_is_capped_at_one():
     metrics = json.loads(
         monitor.publisher.publish.call_args.args[0].data
     )
+
     assert metrics['availability'] == 1.0
 
 
@@ -379,13 +463,15 @@ def test_digital_to_physical_metrics_without_accepted_commands():
 
     monitor.window = 10.0
     monitor.command_timeliness = 10.0
-    monitor.expected_heartbeat_rate = 2.0
+    monitor.heartbeat_timeout = 1.5
     monitor.start_time = 100.0
 
     # Dieci heartbeat positivi in una finestra di 10 secondi.
     monitor.heartbeat_observations = deque([
-        101.0, 102.0, 103.0, 104.0, 105.0,
-        106.0, 107.0, 108.0, 109.0, 110.0,
+        (101.0, True), (102.0, True), (103.0, True),
+        (104.0, True), (105.0, True), (106.0, True),
+        (107.0, True), (108.0, True), (109.0, True),
+        (110.0, True),
     ])
 
     # Nessun comando accettato.
@@ -409,5 +495,5 @@ def test_digital_to_physical_metrics_without_accepted_commands():
     assert metrics['completed_commands'] == 0
     assert metrics['timeliness'] == 0.0
     assert metrics['reliability'] == 0.0
-    assert metrics['availability'] == 0.5
+    assert metrics['availability'] == 0.9
     assert metrics['odte'] == 0.0

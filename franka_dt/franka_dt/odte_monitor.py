@@ -347,7 +347,6 @@ class ODTEMonitor(Node):
 
     def extract_joint_state(self, msg):
         """Estrae e valida lo stato dei sette giunti."""
-
         if len(msg.name) != len(msg.position):
             return None
 
@@ -377,7 +376,6 @@ class ODTEMonitor(Node):
 
     def physical_state_callback(self, msg):
         """Registra uno stato valido del Physical Twin."""
-
         state = self.extract_joint_state(msg)
 
         if state is None:
@@ -392,7 +390,6 @@ class ODTEMonitor(Node):
 
     def digital_state_callback(self, msg):
         """Registra uno stato valido del Digital Twin."""
-
         state = self.extract_joint_state(msg)
 
         if state is None:
@@ -407,7 +404,6 @@ class ODTEMonitor(Node):
 
     def match_states(self):
         """Associa gli stati PT e DT tramite i timestamp."""
-
         while self.pt_states and self.dt_states:
 
             physical = self.pt_states[0]
@@ -444,7 +440,6 @@ class ODTEMonitor(Node):
         digital
     ):
         """Calcola gli errori articolari tra PT e DT."""
-
         errors = {}
 
         for joint in self.joint_names:
@@ -492,7 +487,6 @@ class ODTEMonitor(Node):
 
     def state_processed_callback(self, msg):
         """Registra la Timeliness degli aggiornamenti elaborati dal DT."""
-
         reception_monotonic = time.monotonic()
 
         try:
@@ -627,7 +621,6 @@ class ODTEMonitor(Node):
 
     def calculate_synchronization_diagnostics(self):
         """Valuta la disponibilità e la sincronizzazione PT-DT."""
-
         now = time.monotonic()
 
         # Calcola l'età degli ultimi dati ricevuti.
